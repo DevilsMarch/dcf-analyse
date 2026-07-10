@@ -16,6 +16,30 @@ from .assumptions import Assumptions
 from .model import implied_price
 
 
+def core_model_prices(data: CompanyData, a: Assumptions,
+                      price_perp: float, price_exit: float) -> dict:
+    """Implied price from the always-available models, using default parameters.
+    Used for the football field, the models overview and the Excel export so all
+    three stay consistent."""
+    r = a.cost_of_equity()
+    out = {"DCF · Perpetuity": price_perp, "DCF · Exit-Multiple": price_exit}
+    ddm_g = min(data.dividend_growth if data.dividend_growth is not None else 0.03, r - 0.01)
+    earn_g = (float(np.clip(np.mean(a.revenue_growth_path), -0.05, 0.20))
+              if a.revenue_growth_path else a.initial_revenue_growth)
+    payout = data.payout_ratio if data.payout_ratio is not None else 0.4
+    ny = a.forecast_years
+    v = gordon_ddm(data.dividend_ps, r, ddm_g)
+    if v:
+        out["DDM (Gordon)"] = v
+    v = residual_income(data.eps, data.book_value_ps, r, earn_g, ny, payout, a.perpetuity_growth)
+    if v:
+        out["Residual Income"] = v
+    v = future_income(data.eps, r, earn_g, ny, a.perpetuity_growth)
+    if v:
+        out["Future Income"] = v
+    return out
+
+
 # ==========================================================================
 # 1) Reverse DCF — what does the current price imply?
 # ==========================================================================

@@ -451,6 +451,23 @@ current_scn = {
 }
 assumptions, result = run_scenario(current_scn, data, defaults)
 
+# Implied prices from all always-available models (+ on-demand ones the user has
+# already computed) — shared by the football field, the models tab and Excel.
+model_values = val.core_model_prices(data, assumptions, result.price_perpetuity, result.price_exit)
+_peers = st.session_state.get("peers")
+if _peers:
+    _rv = val.relative_valuation(data, _peers)
+    if _rv["prices"]:
+        model_values["Relative (Median)"] = float(np.median(list(_rv["prices"].values())))
+_hist = st.session_state.get("histmult")
+if _hist:
+    _hv = val.historical_valuation(data, _hist)
+    if _hv["prices"]:
+        model_values["Hist. Multiples (Ø)"] = float(np.median(list(_hv["prices"].values())))
+_mc = st.session_state.get("mc_result")
+if _mc and _mc.get("stats"):
+    model_values["Monte Carlo (Median)"] = _mc["stats"]["p50"]
+
 # --------------------------------------------------------------------------
 # Header metrics
 # --------------------------------------------------------------------------
@@ -497,12 +514,23 @@ with tab_val:
         {"method": "DCF · Sensitivität", "low": min(all_prices), "high": max(all_prices),
          "point": result.price_perpetuity, "color": charts.GOLD_DEEP},
     ]
+    # other valuation methods as single-point markers
+    _mcolor = {"DDM (Gordon)": charts.GOLD_LIGHT, "Residual Income": charts.BRONZE,
+               "Future Income": charts.GOLD_DEEP, "Relative (Median)": charts.CREAM,
+               "Hist. Multiples (Ø)": charts.GREY, "Monte Carlo (Median)": charts.GOLD}
+    for name, price in model_values.items():
+        if name.startswith("DCF") or price is None or not np.isfinite(price):
+            continue
+        ff_rows.append({"method": name, "low": price, "high": price, "point": price,
+                        "color": _mcolor.get(name, charts.GOLD_LIGHT)})
     t = data.price_targets
     if t.get("low") and t.get("high"):
         ff_rows.append({"method": "Analysten-Kursziele", "low": t["low"], "high": t["high"],
                         "point": t.get("mean", (t["low"] + t["high"]) / 2), "color": charts.CREAM})
     st.altair_chart(charts.football_field(ff_rows, data.price, pccy), use_container_width=True)
-    st.caption("Balken = Spanne, weißer Strich = Mittelwert, rote Linie = aktueller Kurs.")
+    st.caption("Balken = Spanne, weißer Strich = Mittelwert, rote Linie = aktueller Kurs. "
+               "Weitere Methoden (Comps, Historie, Monte Carlo) erscheinen automatisch, "
+               "sobald du sie im Tab **Modelle** berechnet hast.")
 
     b1, b2 = st.columns([3, 2])
     with b1:
@@ -590,25 +618,13 @@ with tab_models:
     st.caption(f"Eigenkapitalkosten (CAPM) für die Equity-Modelle: **{r_eq:.2%}** · "
                f"WACC: **{result.wacc:.2%}** · alle Kurse in {pccy}.")
 
-    # --- overview of the cheap, always-available models -------------------
-    ddm_g_def = min(data.dividend_growth if data.dividend_growth is not None else 0.03, r_eq - 0.01)
     earn_g_def = float(np.clip(np.mean(assumptions.revenue_growth_path), -0.05, 0.20))
     ny = assumptions.forecast_years
     payout_def = data.payout_ratio if data.payout_ratio is not None else 0.4
 
-    ov = [{"Methode": "DCF · Perpetuity", "Kurs": result.price_perpetuity},
-          {"Methode": "DCF · Exit-Multiple", "Kurs": result.price_exit}]
-    _v = val.gordon_ddm(data.dividend_ps, r_eq, ddm_g_def)
-    if _v:
-        ov.append({"Methode": "DDM (Gordon)", "Kurs": _v})
-    _v = val.residual_income(data.eps, data.book_value_ps, r_eq, earn_g_def, ny, payout_def,
-                             assumptions.perpetuity_growth)
-    if _v:
-        ov.append({"Methode": "Residual Income", "Kurs": _v})
-    _v = val.future_income(data.eps, r_eq, earn_g_def, ny, assumptions.perpetuity_growth)
-    if _v:
-        ov.append({"Methode": "Future Income", "Kurs": _v})
-
+    # reuse the shared model values (includes on-demand results once computed)
+    ov = [{"Methode": k, "Kurs": v} for k, v in model_values.items()
+          if v is not None and np.isfinite(v)]
     st.markdown("#### Methodenübersicht")
     st.altair_chart(charts.methods_bar(ov, data.price, pccy), use_container_width=True)
     st.caption("Standard-Parameter; Feineinstellung in den Reitern unten. Rote Linie = Marktkurs.")
@@ -868,7 +884,7 @@ with tab_exp:
         st.markdown("**Excel-Modell**")
         st.caption("Lebende Formeln, Charts, Sensitivitäten. Gelbe Zellen editierbar.")
         st.download_button("⬇️ Excel herunterladen",
-                           data=workbook_bytes(data, assumptions, result),
+                           data=workbook_bytes(data, assumptions, result, model_values=model_values),
                            file_name=f"DCF_{data.ticker}.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                            type="primary", use_container_width=True)

@@ -78,7 +78,7 @@ MULT = '0.0"x"'
 
 def build_workbook(data: CompanyData, a: Assumptions,
                    result: DCFResult | None = None,
-                   mid_year: bool = True) -> Workbook:
+                   mid_year: bool = True, model_values: dict | None = None) -> Workbook:
     if result is None:
         result = run_dcf(data, a, mid_year=mid_year)
 
@@ -105,6 +105,11 @@ def build_workbook(data: CompanyData, a: Assumptions,
     # ---- Sensitivity ------------------------------------------------------
     Z = wb.create_sheet("Sensitivity")
     _build_sensitivity(Z, data, a, result)
+
+    # ---- Models overview (optional) ---------------------------------------
+    if model_values:
+        M = wb.create_sheet("Modelle")
+        _build_models(M, data, model_values)
 
     wb.active = 0
     return wb
@@ -514,10 +519,38 @@ def _build_charts(ws, dcf_ws, data: CompanyData, a: Assumptions):
     ws.add_chart(pie, "H55")
 
 
+def _build_models(ws, data: CompanyData, model_values: dict):
+    """Overview of all valuation methods and their implied prices."""
+    ws.column_dimensions["B"].width = 30
+    ws.column_dimensions["C"].width = 16
+    ws.column_dimensions["D"].width = 16
+    _title(ws, "B1", f"Bewertungsmethoden — {data.name} ({data.ticker})")
+    ws["B2"] = f"Impliziter Kurs je Methode · Marktkurs {data.price:,.2f} {data.price_currency}"
+    ws["B2"].font = Font(italic=True, color=GREY, size=9)
+
+    _header(ws, "B4", "Methode")
+    _header(ws, "C4", f"Impliziter Kurs ({data.price_currency})")
+    _header(ws, "D4", "Prämie/(Disc.)")
+    row = 5
+    for name, price in model_values.items():
+        if price is None:
+            continue
+        _label(ws, f"B{row}", name, bold=name.startswith("DCF"))
+        _calc(ws, f"C{row}", round(float(price), 2), fmt=NUM, bold=name.startswith("DCF"))
+        prem = price / data.price - 1 if data.price else 0
+        _calc(ws, f"D{row}", round(prem, 4), fmt=PCT)
+        row += 1
+
+    _label(ws, f"B{row + 1}", "Aktueller Marktkurs", bold=True)
+    _calc(ws, f"C{row + 1}", round(data.price, 2), fmt=NUM, bold=True)
+    ws[f"C{row + 1}"].fill = PatternFill("solid", fgColor=LIGHT)
+
+
 def workbook_bytes(data: CompanyData, a: Assumptions,
-                   result: DCFResult | None = None) -> bytes:
+                   result: DCFResult | None = None,
+                   model_values: dict | None = None) -> bytes:
     """Return the .xlsx as bytes (for Streamlit download_button)."""
-    wb = build_workbook(data, a, result)
+    wb = build_workbook(data, a, result, model_values=model_values)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
