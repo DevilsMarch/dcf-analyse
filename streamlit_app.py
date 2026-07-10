@@ -195,6 +195,47 @@ def assemble_assumptions(scalars: dict, drivers: dict, data, dflt: Assumptions) 
     )
 
 
+def _mnum(key, fb):
+    """Read a model-parameter widget value from session_state (fallback default)."""
+    v = st.session_state.get(key)
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return float(fb)
+
+
+def compute_model_values(data, a: Assumptions, result) -> dict:
+    """Implied price per always-available model, using the parameters the user
+    set in the Modelle tab (via session_state). Shared by football field,
+    overview and Excel so all three stay in sync with the sliders."""
+    r_eq = a.cost_of_equity()
+    earn_g = float(np.clip(np.mean(a.revenue_growth_path), -0.05, 0.20)) if a.revenue_growth_path else 0.05
+    out = {"DCF · Perpetuity": result.price_perpetuity, "DCF · Exit-Multiple": result.price_exit}
+
+    ddm_r = _mnum("ddm_r", r_eq * 100) / 100
+    ddm_g1 = _mnum("ddm_g1", (data.dividend_growth or 0.04) * 100) / 100
+    ddm_years = int(_mnum("ddm_years", 5))
+    ddm_g2 = _mnum("ddm_g2", 2.0) / 100
+    v = val.two_stage_ddm(data.dividend_ps, ddm_r, ddm_g1, ddm_years, min(ddm_g2, ddm_r - 0.005))
+    if v:
+        out["DDM (2-Stufen)"] = v
+
+    ri_r = _mnum("ri_r", r_eq * 100) / 100
+    v = val.residual_income(data.eps, data.book_value_ps, ri_r, _mnum("ri_g", earn_g * 100) / 100,
+                            int(_mnum("ri_years", a.forecast_years)),
+                            _mnum("ri_payout", (data.payout_ratio or 0.4) * 100) / 100,
+                            _mnum("ri_tg", 2.0) / 100)
+    if v:
+        out["Residual Income"] = v
+
+    fi_r = _mnum("fi_r", r_eq * 100) / 100
+    v = val.future_income(data.eps, fi_r, _mnum("fi_g", earn_g * 100) / 100,
+                          int(_mnum("fi_years", a.forecast_years)), _mnum("fi_tg", 2.0) / 100)
+    if v:
+        out["Future Income"] = v
+    return out
+
+
 def run_scenario(scn: dict, data, dflt: Assumptions):
     a = assemble_assumptions(scn["scalars"], scn["drivers"], data, dflt)
     r = run_dcf(data, a, mid_year=bool(scn["scalars"].get("mid_year", True)))
@@ -240,6 +281,26 @@ def reset_inputs(data, a: Assumptions):
     ss["pension"] = float(a.pension_liability)
     ss["associates"] = float(a.associates)
     ss["mid_year"] = True
+
+    # Parameters for the alternative valuation models (Modelle tab). Set here so
+    # they feed the football field / overview and reset cleanly per company.
+    r_eq = a.cost_of_equity()
+    earn_g = float(np.clip(np.mean(a.revenue_growth_path), -0.05, 0.20)) if a.revenue_growth_path else 0.05
+    div_g = (data.dividend_growth if data.dividend_growth is not None else 0.04)
+    payout = data.payout_ratio if data.payout_ratio is not None else 0.4
+    ss["ddm_r"] = round(r_eq * 100, 2)
+    ss["ddm_g1"] = round(div_g * 100, 2)
+    ss["ddm_years"] = 5
+    ss["ddm_g2"] = 2.0
+    ss["ri_r"] = round(r_eq * 100, 2)
+    ss["ri_g"] = round(earn_g * 100, 2)
+    ss["ri_years"] = int(a.forecast_years)
+    ss["ri_payout"] = float(round(payout * 100, 0))
+    ss["ri_tg"] = 2.0
+    ss["fi_r"] = round(r_eq * 100, 2)
+    ss["fi_g"] = round(earn_g * 100, 2)
+    ss["fi_years"] = int(a.forecast_years)
+    ss["fi_tg"] = 2.0
     seed_drivers(data, a)
 
 
@@ -453,7 +514,7 @@ assumptions, result = run_scenario(current_scn, data, defaults)
 
 # Implied prices from all always-available models (+ on-demand ones the user has
 # already computed) — shared by the football field, the models tab and Excel.
-model_values = val.core_model_prices(data, assumptions, result.price_perpetuity, result.price_exit)
+model_values = compute_model_values(data, assumptions, result)
 _peers = st.session_state.get("peers")
 if _peers:
     _rv = val.relative_valuation(data, _peers)
@@ -618,10 +679,6 @@ with tab_models:
     st.caption(f"Eigenkapitalkosten (CAPM) für die Equity-Modelle: **{r_eq:.2%}** · "
                f"WACC: **{result.wacc:.2%}** · alle Kurse in {pccy}.")
 
-    earn_g_def = float(np.clip(np.mean(assumptions.revenue_growth_path), -0.05, 0.20))
-    ny = assumptions.forecast_years
-    payout_def = data.payout_ratio if data.payout_ratio is not None else 0.4
-
     # reuse the shared model values (includes on-demand results once computed)
     ov = [{"Methode": k, "Kurs": v} for k, v in model_values.items()
           if v is not None and np.isfinite(v)]
@@ -709,19 +766,16 @@ with tab_models:
             st.markdown(f"Dividende je Aktie: **{data.dividend_ps:.2f} {pccy}** · "
                         f"Payout: {pct(data.payout_ratio)}")
             d1, d2, d3 = st.columns(3)
-            r = d1.number_input("Eigenkapitalkosten r (%)", value=round(r_eq * 100, 2),
-                                step=0.25, key="ddm_r") / 100
-            g1 = d2.number_input("Wachstum Stufe 1 (%)",
-                                 value=round((data.dividend_growth or 0.04) * 100, 2),
-                                 step=0.5, key="ddm_g1") / 100
-            yrs = d3.number_input("Jahre Stufe 1", 1, 20, 5, key="ddm_years")
-            g2 = st.slider("Ewiges Wachstum Stufe 2 (%)", -1.0, 6.0, 2.0, 0.25, key="ddm_g2") / 100
+            r = d1.number_input("Eigenkapitalkosten r (%)", step=0.25, key="ddm_r") / 100
+            g1 = d2.number_input("Wachstum Stufe 1 (%)", step=0.5, key="ddm_g1") / 100
+            yrs = d3.number_input("Jahre Stufe 1", 1, 20, key="ddm_years")
+            g2 = st.slider("Ewiges Wachstum Stufe 2 (%)", -1.0, 6.0, step=0.25, key="ddm_g2") / 100
             gordon = val.gordon_ddm(data.dividend_ps, r, min(g1, r - 0.005))
             two = val.two_stage_ddm(data.dividend_ps, r, g1, int(yrs), min(g2, r - 0.005))
             o1, o2 = st.columns(2)
             o1.metric("Gordon-Growth-Wert", f"{gordon:,.2f} {pccy}" if gordon else "n.a.",
                       f"{gordon/data.price-1:+.1%}" if gordon else None, delta_color="off")
-            o2.metric("2-Stufen-DDM", f"{two:,.2f} {pccy}" if two else "n.a.",
+            o2.metric("2-Stufen-DDM (im Football Field)", f"{two:,.2f} {pccy}" if two else "n.a.",
                       f"{two/data.price-1:+.1%}" if two else None, delta_color="off")
             if (gordon and g1 >= r) or (two and g2 >= r):
                 st.caption("Hinweis: Wachstum muss kleiner als r sein.")
@@ -733,15 +787,12 @@ with tab_models:
         else:
             st.markdown(f"EPS: **{data.eps:.2f}** · Buchwert je Aktie: **{data.book_value_ps:.2f} {pccy}**")
             ri1, ri2, ri3 = st.columns(3)
-            r = ri1.number_input("Eigenkapitalkosten r (%)", value=round(r_eq * 100, 2),
-                                 step=0.25, key="ri_r") / 100
-            g = ri2.number_input("Gewinnwachstum (%)", value=round(earn_g_def * 100, 2),
-                                 step=0.5, key="ri_g") / 100
-            yrs = ri3.number_input("Prognosejahre", 3, 20, ny, key="ri_years")
+            r = ri1.number_input("Eigenkapitalkosten r (%)", step=0.25, key="ri_r") / 100
+            g = ri2.number_input("Gewinnwachstum (%)", step=0.5, key="ri_g") / 100
+            yrs = ri3.number_input("Prognosejahre", 3, 20, key="ri_years")
             rp1, rp2 = st.columns(2)
-            payout = rp1.slider("Ausschüttungsquote (%)", 0.0, 100.0,
-                                float(round(payout_def * 100, 0)), 5.0, key="ri_payout") / 100
-            tg = rp2.slider("Terminales RI-Wachstum (%)", -1.0, 5.0, 2.0, 0.25, key="ri_tg") / 100
+            payout = rp1.slider("Ausschüttungsquote (%)", 0.0, 100.0, step=5.0, key="ri_payout") / 100
+            tg = rp2.slider("Terminales RI-Wachstum (%)", -1.0, 5.0, step=0.25, key="ri_tg") / 100
             v = val.residual_income(data.eps, data.book_value_ps, r, g, int(yrs), payout, tg)
             st.metric("Residual-Income-Wert je Aktie", f"{v:,.2f} {pccy}" if v else "n.a.",
                       f"{v/data.price-1:+.1%}" if v else None, delta_color="off")
@@ -754,12 +805,10 @@ with tab_models:
         else:
             st.markdown(f"Aktuelles EPS: **{data.eps:.2f} {pccy}** — diskontierte künftige Gewinne.")
             f1, f2, f3 = st.columns(3)
-            r = f1.number_input("Eigenkapitalkosten r (%)", value=round(r_eq * 100, 2),
-                                step=0.25, key="fi_r") / 100
-            g = f2.number_input("Gewinnwachstum (%)", value=round(earn_g_def * 100, 2),
-                                step=0.5, key="fi_g") / 100
-            yrs = f3.number_input("Prognosejahre", 3, 20, ny, key="fi_years")
-            tg = st.slider("Ewiges Gewinnwachstum (%)", -1.0, 5.0, 2.0, 0.25, key="fi_tg") / 100
+            r = f1.number_input("Eigenkapitalkosten r (%)", step=0.25, key="fi_r") / 100
+            g = f2.number_input("Gewinnwachstum (%)", step=0.5, key="fi_g") / 100
+            yrs = f3.number_input("Prognosejahre", 3, 20, key="fi_years")
+            tg = st.slider("Ewiges Gewinnwachstum (%)", -1.0, 5.0, step=0.25, key="fi_tg") / 100
             v = val.future_income(data.eps, r, g, int(yrs), tg)
             st.metric("Future-Income-Wert je Aktie", f"{v:,.2f} {pccy}" if v else "n.a.",
                       f"{v/data.price-1:+.1%}" if v else None, delta_color="off")
