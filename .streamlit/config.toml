@@ -1,10 +1,10 @@
-# The charts use dark-friendly colours, so pin the dark theme for consistency
-# across viewers (also on Streamlit Community Cloud).
+# Professional black / gold / red theme.
 [theme]
 base = "dark"
-primaryColor = "#4C86C6"
-backgroundColor = "#0E1117"
-secondaryBackgroundColor = "#1A1E27"
+primaryColor = "#D4AF37"
+backgroundColor = "#0A0A0A"
+secondaryBackgroundColor = "#15140F"
+textColor = "#EDE9DE"
 
 [browser]
 gatherUsageStats = false

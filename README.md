@@ -1,10 +1,10 @@
-# Automatische DCF-Analyse
+# DCF Terminal — Automatische DCF-Analyse
 
 Semi-automatische Discounted-Cash-Flow-Bewertung nach dem Vorbild eines
-JP-Morgan-Banking-Modells. Ticker eingeben → Finanzdaten werden automatisch von
-Yahoo Finance geholt → sinnvolle Standard-Annahmen werden abgeleitet → alle
-Annahmen live per Regler anpassbar → jederzeit als **Excel-Modell mit lebenden
-Formeln** herunterladbar.
+JP-Morgan-Banking-Modells, in einem professionellen Schwarz-Gold-Rot-Design.
+**Firmennamen oder Ticker suchen** → Finanzdaten werden automatisch von Yahoo
+Finance geholt → sinnvolle Standard-Annahmen werden abgeleitet → alle Annahmen
+live anpassbar → jederzeit als **Excel-Modell mit lebenden Formeln** herunterladbar.
 
 ## Was automatisch kommt und was du steuerst
 
@@ -47,7 +47,8 @@ streamlit run streamlit_app.py
 ```
 
 Die App öffnet sich im Browser (Standard: http://localhost:8501).
-Ticker-Beispiele: `AAPL`, `MSFT`, `SAP.DE`, `ULVR.L`, `AIR.PA`, `7203.T`.
+Oben in der Seitenleiste nach **Firmenname** (z. B. `Apple`, `Volkswagen`, `LVMH`)
+oder direkt nach **Ticker** (`AAPL`, `SAP.DE`, `ULVR.L`, `AIR.PA`, `7203.T`) suchen.
 
 ## Online stellen (Streamlit Community Cloud, kostenlos)
 

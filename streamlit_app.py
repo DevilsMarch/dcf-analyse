@@ -18,11 +18,98 @@ import pandas as pd
 import streamlit as st
 
 import charts
-from dcf import fetch_company_data, default_assumptions, run_dcf
+from dcf import fetch_company_data, default_assumptions, run_dcf, search_companies
 from dcf.assumptions import Assumptions, consensus_growth_path, linear_fade_path
 from dcf.excel_export import workbook_bytes
 
-st.set_page_config(page_title="Automatische DCF-Analyse", page_icon="📈", layout="wide")
+st.set_page_config(page_title="DCF Terminal", page_icon="◆", layout="wide")
+
+
+def inject_theme():
+    """Professional black / gold / red styling on top of the dark base theme."""
+    st.markdown(
+        """
+        <style>
+        :root {
+            --gold:#D4AF37; --gold-soft:#E7CC6E; --gold-deep:#A67C1F;
+            --red:#C0392B; --ink:#0A0A0A; --panel:#15140F; --panel-2:#1C1A12;
+            --line:rgba(212,175,55,.22); --text:#EDE9DE; --muted:#9A9488;
+        }
+        .stApp { background:
+            radial-gradient(1200px 500px at 80% -10%, rgba(212,175,55,.06), transparent 60%),
+            var(--ink); }
+        .block-container { padding-top: 2.2rem; max-width: 1280px; }
+
+        /* Brand header */
+        .brand { display:flex; align-items:center; gap:.85rem; margin-bottom:.2rem; }
+        .brand .mark { width:42px; height:42px; border-radius:9px;
+            background:linear-gradient(145deg,#E7CC6E,#A67C1F);
+            display:flex; align-items:center; justify-content:center;
+            color:#0A0A0A; font-weight:800; font-size:1.25rem;
+            box-shadow:0 2px 14px rgba(212,175,55,.28); }
+        .brand h1 { font-size:1.7rem; font-weight:800; letter-spacing:.12em;
+            margin:0; color:var(--text); text-transform:uppercase; }
+        .brand h1 span { color:var(--gold); }
+        .brand .sub { color:var(--muted); font-size:.82rem; letter-spacing:.04em; margin:.15rem 0 0; }
+        .rule { height:2px; margin:.6rem 0 1.2rem;
+            background:linear-gradient(90deg, var(--gold), rgba(212,175,55,0)); }
+
+        h2,h3,h4 { color:var(--text) !important; letter-spacing:.01em; }
+        h4 { border-left:3px solid var(--gold); padding-left:.55rem; }
+
+        /* Metric cards */
+        [data-testid="stMetric"] { background:linear-gradient(160deg,var(--panel-2),var(--panel));
+            border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+        [data-testid="stMetricLabel"] p { color:var(--muted); font-size:.72rem;
+            text-transform:uppercase; letter-spacing:.09em; }
+        [data-testid="stMetricValue"] { color:var(--gold); font-weight:700; }
+
+        /* Buttons */
+        .stButton>button, [data-testid="stDownloadButton"]>button {
+            border-radius:9px; font-weight:600; letter-spacing:.02em;
+            border:1px solid var(--line); background:var(--panel-2); color:var(--text); }
+        .stButton>button:hover, [data-testid="stDownloadButton"]>button:hover {
+            border-color:var(--gold); color:var(--gold); }
+        .stButton>button[kind="primary"], [data-testid="stDownloadButton"]>button[kind="primary"] {
+            background:linear-gradient(145deg,#E7CC6E,#C29A2A); color:#0A0A0A !important;
+            border:none; box-shadow:0 2px 12px rgba(212,175,55,.25); }
+        .stButton>button[kind="primary"]:hover { filter:brightness(1.07); color:#0A0A0A; }
+
+        /* Tabs */
+        [data-baseweb="tab-list"] { gap:.3rem; border-bottom:1px solid var(--line); }
+        [data-baseweb="tab"] { color:var(--muted); }
+        [data-baseweb="tab"][aria-selected="true"] { color:var(--gold) !important; }
+        [data-baseweb="tab-highlight"], [data-baseweb="tab-border"] { background:var(--gold) !important; }
+
+        /* Sidebar */
+        [data-testid="stSidebar"] { background:#0C0B08; border-right:1px solid var(--line); }
+        [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+            color:var(--gold) !important; font-size:.95rem; letter-spacing:.06em;
+            text-transform:uppercase; }
+
+        /* Inputs focus */
+        input:focus, textarea:focus { border-color:var(--gold) !important; }
+        a { color:var(--gold) !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def brand_header():
+    st.markdown(
+        """
+        <div class="brand">
+          <div class="mark">◆</div>
+          <div>
+            <h1>DCF&nbsp;<span>Terminal</span></h1>
+            <p class="sub">Semi-automatische Unternehmensbewertung · Daten via Yahoo Finance</p>
+          </div>
+        </div>
+        <div class="rule"></div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # Scalar assumption widgets — keyed so scenarios can rehydrate them.
 SCALAR_KEYS = ["forecast_years", "tax_rate", "wacc_mode", "wacc_override", "rf", "erp",
@@ -35,6 +122,11 @@ DRIVER_COLS = ["Wachstum %", "EBITDA-Marge %", "D&A %", "Capex %", "ΔNWC %"]
 @st.cache_data(show_spinner="Lade Finanzdaten & Analystenschätzungen …")
 def load_company(ticker: str):
     return fetch_company_data(ticker)
+
+
+@st.cache_data(show_spinner="Suche Unternehmen …")
+def search_cached(query: str):
+    return search_companies(query)
 
 
 def pct(x) -> str:
@@ -162,36 +254,61 @@ def apply_scenario(scn: dict, data):
 
 
 # --------------------------------------------------------------------------
-# Header + ticker
+# Header + company search (by name or ticker)
 # --------------------------------------------------------------------------
-st.title("📈 Automatische DCF-Analyse")
-st.caption(
-    "Ticker eingeben → Daten + Analystenkonsens automatisch → Treiber pro Jahr und "
-    "Annahmen live anpassen → Szenarien speichern/laden → als Excel herunterladen. "
-    "Datenquelle: Yahoo Finance (weltweit)."
-)
+inject_theme()
+brand_header()
 
 with st.sidebar:
     st.header("1 · Unternehmen")
-    ticker = st.text_input("Ticker-Symbol", value=st.session_state.get("ticker", "AAPL"),
-                           help="Beispiele: AAPL · MSFT · SAP.DE · ULVR.L · AIR.PA · 7203.T"
-                           ).strip().upper()
-    load = st.button("Daten laden", type="primary", use_container_width=True)
+    query = st.text_input("Unternehmen oder Ticker", key="query",
+                          placeholder="z. B. Apple, Volkswagen, AAPL, SAP.DE",
+                          help="Firmennamen oder Ticker-Symbol eingeben und suchen.")
+    do_search = st.button("🔍 Suchen", type="primary", use_container_width=True)
 
-if load or "data" not in st.session_state:
-    if not ticker:
-        st.stop()
+# Run the search; auto-select on an exact ticker or single hit.
+if do_search and query.strip():
+    st.session_state["search_results"] = search_cached(query.strip())
+    res = st.session_state["search_results"]
+    q_up = query.strip().upper()
+    exact = [r for r in res if r["symbol"].upper() == q_up]
+    if exact:
+        st.session_state["pending_load"] = exact[0]["symbol"]
+    elif len(res) == 1:
+        st.session_state["pending_load"] = res[0]["symbol"]
+
+# Result picker (only when there is a choice to make)
+results = st.session_state.get("search_results", [])
+with st.sidebar:
+    if results and not st.session_state.get("pending_load"):
+        labels = [f"{r['name']} · {r['symbol']} · {r['exchange']}" for r in results]
+        idx = st.selectbox("Treffer wählen", range(len(results)),
+                           format_func=lambda i: labels[i], key="search_pick")
+        if st.button(f"📥 Laden: {results[idx]['symbol']}", type="primary", use_container_width=True):
+            st.session_state["pending_load"] = results[idx]["symbol"]
+    elif do_search and query.strip() and not results:
+        st.warning("Keine Treffer. Prüfe die Schreibweise oder gib das Ticker-Symbol ein.")
+
+# Decide what to load: initial default, or a user pick
+target = "AAPL" if "data" not in st.session_state else None
+if st.session_state.get("pending_load"):
+    target = st.session_state.pop("pending_load")
+
+if target:
     try:
-        data = load_company(ticker)
+        data = load_company(target)
     except Exception as e:  # noqa: BLE001
         st.error(f"❌ {e}")
         st.stop()
-    st.session_state["ticker"] = ticker
+    st.session_state["ticker"] = data.ticker
     st.session_state["data"] = data
     st.session_state["defaults"] = default_assumptions(data)
     reset_inputs(data, st.session_state["defaults"])
     st.session_state["scenarios"] = {}   # comparison set is per-company
+    st.session_state.pop("search_results", None)
 
+if "data" not in st.session_state:
+    st.stop()
 data = st.session_state["data"]
 defaults: Assumptions = st.session_state["defaults"]
 ccy = data.reporting_currency
@@ -337,11 +454,20 @@ c4.metric("WACC", pct(result.wacc))
 
 r1, r2, r3 = st.columns(3)
 r1.metric("Impliziter Kurs — Perpetuity", f"{result.price_perpetuity:,.2f} {pccy}",
-          f"{result.premium_perpetuity:+.1%} vs. Markt")
+          f"{result.premium_perpetuity:+.1%} vs. Markt", delta_color="off")
 r2.metric("Impliziter Kurs — Exit-Multiple", f"{result.price_exit:,.2f} {pccy}",
-          f"{result.premium_exit:+.1%} vs. Markt")
+          f"{result.premium_exit:+.1%} vs. Markt", delta_color="off")
 avg = (result.price_perpetuity + result.price_exit) / 2
-r3.metric("Ø beider Methoden", f"{avg:,.2f} {pccy}", f"{avg / data.price - 1:+.1%} vs. Markt")
+r3.metric("Ø beider Methoden", f"{avg:,.2f} {pccy}", f"{avg / data.price - 1:+.1%} vs. Markt",
+          delta_color="off")
+
+if result.price_perpetuity < 0 or result.equity_perpetuity < 0:
+    st.warning(
+        "⚠️ Impliziter Kurs negativ — typisch bei Unternehmen mit großem Finanz-/Leasingarm "
+        "(z. B. Autohersteller, Banken), deren ausgewiesene Net Debt sehr hoch ist "
+        f"({data.net_debt:,.0f} Mio {ccy}). Passe **Net Debt** in der Seitenleiste unter "
+        "*EV → Equity Bridge* an die rein operative Nettoverschuldung an."
+    )
 
 # --------------------------------------------------------------------------
 # Tabs
@@ -356,16 +482,16 @@ with tab_val:
                  [v for row in s["price_multiple"] for v in row]
     ff_rows = [
         {"method": "DCF · Perpetuity", "low": result.price_perpetuity,
-         "high": result.price_perpetuity, "point": result.price_perpetuity, "color": charts.BLUE},
+         "high": result.price_perpetuity, "point": result.price_perpetuity, "color": charts.GOLD},
         {"method": "DCF · Exit-Multiple", "low": result.price_exit,
-         "high": result.price_exit, "point": result.price_exit, "color": charts.TEAL},
+         "high": result.price_exit, "point": result.price_exit, "color": charts.BRONZE},
         {"method": "DCF · Sensitivität", "low": min(all_prices), "high": max(all_prices),
-         "point": result.price_perpetuity, "color": charts.NAVY},
+         "point": result.price_perpetuity, "color": charts.GOLD_DEEP},
     ]
     t = data.price_targets
     if t.get("low") and t.get("high"):
         ff_rows.append({"method": "Analysten-Kursziele", "low": t["low"], "high": t["high"],
-                        "point": t.get("mean", (t["low"] + t["high"]) / 2), "color": charts.AMBER})
+                        "point": t.get("mean", (t["low"] + t["high"]) / 2), "color": charts.CREAM})
     st.altair_chart(charts.football_field(ff_rows, data.price, pccy), use_container_width=True)
     st.caption("Balken = Spanne, weißer Strich = Mittelwert, rote Linie = aktueller Kurs.")
 
@@ -434,9 +560,10 @@ with tab_sens:
         rng = (hi - lo) or 1.0
 
         def color(v):
-            tt = (v - lo) / rng
-            r = int(200 + (76 - 200) * tt); g = int(80 + (159 - 80) * tt); b = int(77 + (112 - 77) * tt)
-            return f"background-color: rgb({r},{g},{b}); color: #f5f5f5"
+            tt = (v - lo) / rng                      # 0 = low (red) → 1 = high (gold)
+            r = int(150 + (212 - 150) * tt); g = int(45 + (175 - 45) * tt); b = int(38 + (55 - 38) * tt)
+            txt = "#141208" if tt > 0.55 else "#F2ECD8"
+            return f"background-color: rgb({r},{g},{b}); color:{txt}"
         return df.style.format("{:,.0f}").map(color)
 
     sc1, sc2 = st.columns(2)

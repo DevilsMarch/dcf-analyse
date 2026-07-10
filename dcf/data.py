@@ -144,6 +144,38 @@ def _fetch_analyst(tk) -> dict:
     return out
 
 
+def search_companies(query: str, max_results: int = 8) -> list[dict]:
+    """Look up companies by name or ticker via Yahoo's search.
+
+    Returns a list of {symbol, name, exchange, type}, most relevant first,
+    restricted to equities and ETFs. Empty list on failure or no match.
+    """
+    query = (query or "").strip()
+    if not query:
+        return []
+    try:
+        quotes = yf.Search(query, max_results=max_results).quotes or []
+    except Exception:
+        return []
+
+    out, seen = [], set()
+    for q in quotes:
+        sym = (q.get("symbol") or "").strip()
+        if not sym or sym in seen:
+            continue
+        if q.get("quoteType") not in ("EQUITY", "ETF"):
+            continue
+        name = " ".join((q.get("shortname") or q.get("longname") or sym).split())
+        out.append({
+            "symbol": sym,
+            "name": name,
+            "exchange": q.get("exchDisp") or q.get("exchange") or "",
+            "type": q.get("quoteType"),
+        })
+        seen.add(sym)
+    return out
+
+
 def fetch_company_data(ticker: str) -> CompanyData:
     """Fetch and normalize financials for `ticker`. Raises ValueError if the
     ticker is unknown or lacks the minimum data needed for a DCF."""

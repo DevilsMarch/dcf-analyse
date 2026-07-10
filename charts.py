@@ -9,15 +9,25 @@ from __future__ import annotations
 import altair as alt
 import pandas as pd
 
-NAVY = "#1F3864"
-BLUE = "#4C86C6"
-TEAL = "#2CA6A4"
-AMBER = "#E8A33D"
-GREEN = "#4C9F70"
-RED = "#C0504D"
-GREY = "#9AA0A6"
+# Black / gold / red palette. Legacy names kept as aliases so existing chart
+# code needn't change — they now map onto the gold-red-neutral scheme.
+GOLD = "#D4AF37"
+GOLD_LIGHT = "#E7CC6E"
+GOLD_DEEP = "#A67C1F"
+BRONZE = "#8C6D2A"
+RED = "#C0392B"
+RED_BRIGHT = "#E24A3B"
+GREY = "#8A8377"
+CREAM = "#E8E0C8"
 
-_AXIS = alt.Axis(labelColor="#C9D1D9", titleColor="#C9D1D9", gridColor="#2A2E36")
+# Aliases used across the chart builders
+NAVY = GOLD_DEEP
+BLUE = GOLD
+TEAL = BRONZE
+AMBER = GOLD_LIGHT
+GREEN = GOLD
+
+_AXIS = alt.Axis(labelColor="#CFC7B2", titleColor="#CFC7B2", gridColor="#26221A")
 
 
 def growth_curve(years, growth) -> alt.Chart:
@@ -42,7 +52,7 @@ def revenue_ebitda(years, revenue, ebitda, ccy: str) -> alt.Chart:
         y=alt.Y("Wert:Q", axis=alt.Axis(format="~s", **_axis_kwargs()), title=f"Mio {ccy}"),
         color=alt.Color("Kennzahl:N",
                         scale=alt.Scale(domain=["Umsatz", "EBITDA"], range=[BLUE, TEAL]),
-                        legend=alt.Legend(orient="top", title=None, labelColor="#C9D1D9")),
+                        legend=alt.Legend(orient="top", title=None, labelColor="#CFC7B2")),
         tooltip=[alt.Tooltip("Jahr:O"), "Kennzahl:N",
                  alt.Tooltip("Wert:Q", format=",.0f")],
     ).properties(height=280)
@@ -57,8 +67,8 @@ def fcf_chart(years, ufcf, pv, ccy: str) -> alt.Chart:
         xOffset="Typ:N",
         y=alt.Y("Wert:Q", axis=alt.Axis(format="~s", **_axis_kwargs()), title=f"Mio {ccy}"),
         color=alt.Color("Typ:N",
-                        scale=alt.Scale(domain=["Unlevered FCF", "Barwert (PV)"], range=[GREEN, NAVY]),
-                        legend=alt.Legend(orient="top", title=None, labelColor="#C9D1D9")),
+                        scale=alt.Scale(domain=["Unlevered FCF", "Barwert (PV)"], range=[GOLD, BRONZE]),
+                        legend=alt.Legend(orient="top", title=None, labelColor="#CFC7B2")),
         tooltip=[alt.Tooltip("Jahr:O"), "Typ:N", alt.Tooltip("Wert:Q", format=",.0f")],
     ).properties(height=280)
     return chart
@@ -75,8 +85,8 @@ def driver_curves(years, margin, da, capex, nwc) -> alt.Chart:
         y=alt.Y("Wert:Q", axis=alt.Axis(format="%", **_axis_kwargs()), title="% vom Umsatz"),
         color=alt.Color("Treiber:N",
                         scale=alt.Scale(domain=["EBITDA-Marge", "D&A", "Capex", "Δ NWC"],
-                                        range=[TEAL, BLUE, AMBER, GREY]),
-                        legend=alt.Legend(orient="top", title=None, labelColor="#C9D1D9")),
+                                        range=[GOLD, GOLD_LIGHT, RED, GREY]),
+                        legend=alt.Legend(orient="top", title=None, labelColor="#CFC7B2")),
         tooltip=[alt.Tooltip("Jahr:O"), "Treiber:N", alt.Tooltip("Wert:Q", format=".1%")],
     ).properties(height=260)
 
@@ -94,8 +104,8 @@ def value_composition(pv_fcf: float, pv_tv: float, ccy: str) -> alt.Chart:
         x=alt.X("Wert:Q", stack="normalize", axis=alt.Axis(format="%", **_axis_kwargs()),
                 title="Anteil am Enterprise Value"),
         color=alt.Color("Komponente:N",
-                        scale=alt.Scale(domain=["PV der FCF", "PV Terminal Value"], range=[BLUE, AMBER]),
-                        legend=alt.Legend(orient="top", title=None, labelColor="#C9D1D9")),
+                        scale=alt.Scale(domain=["PV der FCF", "PV Terminal Value"], range=[GOLD, BRONZE]),
+                        legend=alt.Legend(orient="top", title=None, labelColor="#CFC7B2")),
         tooltip=["Komponente:N", alt.Tooltip("Wert:Q", format=",.0f"),
                  alt.Tooltip("Anteil:Q", format=".1%")],
     )
@@ -115,7 +125,7 @@ def football_field(rows: list[dict], current_price: float, ccy: str) -> alt.Char
     order = list(df["method"])
 
     bars = alt.Chart(df).mark_bar(height=18, opacity=0.85, cornerRadius=3).encode(
-        y=alt.Y("method:N", sort=order, axis=alt.Axis(title=None, labelColor="#C9D1D9", labelLimit=200)),
+        y=alt.Y("method:N", sort=order, axis=alt.Axis(title=None, labelColor="#CFC7B2", labelLimit=200)),
         x=alt.X("low:Q", axis=alt.Axis(title=f"Impliziter Kurs ({ccy})", **_axis_kwargs())),
         x2="high:Q",
         color=alt.Color("method:N", sort=order,
@@ -147,7 +157,7 @@ def scenario_prices(rows: list[dict], current_price: float, ccy: str) -> alt.Cha
         y=alt.Y("Kurs:Q", axis=alt.Axis(**_axis_kwargs()), title=f"Impliziter Kurs ({ccy})"),
         color=alt.Color("Methode:N",
                         scale=alt.Scale(domain=["Perpetuity", "Exit-Multiple"], range=[BLUE, TEAL]),
-                        legend=alt.Legend(orient="top", title=None, labelColor="#C9D1D9")),
+                        legend=alt.Legend(orient="top", title=None, labelColor="#CFC7B2")),
         tooltip=["Szenario:N", "Methode:N", alt.Tooltip("Kurs:Q", format=",.2f")],
     )
     cur = pd.DataFrame({"p": [current_price]})
@@ -164,10 +174,12 @@ def scenario_growth(series: list[dict]) -> alt.Chart:
     return alt.Chart(df).mark_line(point=True, strokeWidth=2.5).encode(
         x=alt.X("Jahr:O", axis=_AXIS, title="Prognosejahr"),
         y=alt.Y("Wachstum:Q", axis=alt.Axis(format="%", **_axis_kwargs()), title="Umsatzwachstum"),
-        color=alt.Color("Szenario:N", legend=alt.Legend(orient="top", title=None, labelColor="#C9D1D9")),
+        color=alt.Color("Szenario:N",
+                        scale=alt.Scale(range=[GOLD, RED, CREAM, BRONZE, GOLD_LIGHT, GREY, RED_BRIGHT]),
+                        legend=alt.Legend(orient="top", title=None, labelColor="#CFC7B2")),
         tooltip=["Szenario:N", "Jahr:O", alt.Tooltip("Wachstum:Q", format=".1%")],
     ).properties(height=280)
 
 
 def _axis_kwargs() -> dict:
-    return {"labelColor": "#C9D1D9", "titleColor": "#C9D1D9", "gridColor": "#2A2E36"}
+    return {"labelColor": "#CFC7B2", "titleColor": "#CFC7B2", "gridColor": "#26221A"}
