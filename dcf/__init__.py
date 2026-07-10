@@ -9,7 +9,8 @@ Pipeline:
 The Streamlit UI (app.py) ties these together with editable assumptions.
 """
 
-from .data import CompanyData, fetch_company_data, search_companies
+from .data import (CompanyData, fetch_company_data, search_companies,
+                   fetch_peer_multiples, historical_multiples)
 from .assumptions import Assumptions, default_assumptions
 from .model import DCFResult, run_dcf
 

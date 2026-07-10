@@ -197,6 +197,16 @@ def run_dcf(data: CompanyData, a: Assumptions, mid_year: bool = True) -> DCFResu
     )
 
 
+def implied_price(data: CompanyData, a: Assumptions, mid_year: bool = True,
+                  method: str = "perpetuity") -> float:
+    """Lightweight implied share price for a set of assumptions (no sensitivity
+    grids) — used by reverse DCF and Monte Carlo where speed matters."""
+    wacc = a.wacc()
+    if method == "exit":
+        return _ev_with(data, a, mid_year, wacc, "exit", mult=a.exit_ebitda_multiple)[1]
+    return _ev_with(data, a, mid_year, wacc, "perpetuity", g=a.perpetuity_growth)[1]
+
+
 def _ev_with(data, a, mid_year, wacc, method, g=None, mult=None) -> tuple[float, float]:
     """Recompute EV & implied price for a (wacc, g|multiple) point."""
     n = a.forecast_years

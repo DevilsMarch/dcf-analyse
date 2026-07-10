@@ -61,6 +61,17 @@ class CompanyData:
     price_targets: dict = field(default_factory=dict)       # {current, low, mean, median, high}
     num_analysts: "int | None" = None
 
+    # Per-share fundamentals & trading multiples (price-currency units)
+    eps: "float | None" = None                 # trailing EPS
+    forward_eps: "float | None" = None
+    book_value_ps: "float | None" = None       # book value per share
+    dividend_ps: float = 0.0                    # annual dividend per share
+    payout_ratio: "float | None" = None
+    dividend_growth: "float | None" = None      # historical dividend CAGR
+    own_multiples: dict = field(default_factory=dict)  # {pe, forward_pe, ev_ebitda, ev_sales, pb}
+    sector: str = ""
+    industry: str = ""
+
     warnings: list = field(default_factory=list)
 
     # -- convenience -------------------------------------------------------
@@ -142,6 +153,123 @@ def _fetch_analyst(tk) -> dict:
     except Exception:
         pass
     return out
+
+
+def _dividend_growth(tk) -> Optional[float]:
+    """Annualised dividend-per-share CAGR from the dividend history (best-effort)."""
+    try:
+        div = tk.dividends
+        if div is None or len(div) == 0:
+            return None
+        years = div.index.year
+        annual = div.groupby(years).sum()
+        counts = div.groupby(years).size()
+        annual = annual[annual > 0]
+        if len(annual) < 4:
+            return None
+        window = annual.iloc[-7:]                      # recent years incl. possibly-partial current
+        wc = counts.reindex(window.index)
+        if len(window) >= 2 and wc.iloc[-1] < wc.max():  # drop partial current year
+            window = window.iloc[:-1]
+        window = window.iloc[-6:]                       # last up to 6 complete years
+        if len(window) < 3:
+            return None
+        first, last = float(window.iloc[0]), float(window.iloc[-1])
+        n = len(window) - 1
+        if first <= 0 or last <= 0 or n < 1:
+            return None
+        g = (last / first) ** (1 / n) - 1
+        return float(np.clip(g, -0.5, 0.5))
+    except Exception:
+        return None
+
+
+def fetch_peer_multiples(tickers: list[str]) -> list[dict]:
+    """Current trading multiples for a list of peer tickers (for comps)."""
+    out = []
+    for t in tickers:
+        t = t.strip().upper()
+        if not t:
+            continue
+        try:
+            info = yf.Ticker(t).info or {}
+        except Exception:
+            continue
+        if not (info.get("currentPrice") or info.get("regularMarketPrice")):
+            continue
+
+        def g(k):
+            v = info.get(k)
+            try:
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        out.append({
+            "ticker": t,
+            "name": " ".join((info.get("shortName") or t).split()),
+            "pe": g("trailingPE"), "forward_pe": g("forwardPE"),
+            "ev_ebitda": g("enterpriseToEbitda"), "ev_sales": g("enterpriseToRevenue"),
+            "pb": g("priceToBook"),
+        })
+    return out
+
+
+def historical_multiples(ticker: str, data: "CompanyData") -> dict:
+    """Approximate the company's own historical P/E and EV/EBITDA.
+
+    Uses annual net income / EBITDA together with the share price at each fiscal
+    year-end. Shares outstanding and net debt are approximated with today's
+    figures, so treat the result as indicative, not exact.
+    """
+    tk = yf.Ticker(ticker)
+    try:
+        income = tk.financials
+        hist = tk.history(period="6y")
+    except Exception:
+        return {}
+    if income is None or income.empty or hist is None or hist.empty:
+        return {}
+
+    ni_row = _row(income, "Net Income", "Net Income Common Stockholders",
+                  "Net Income From Continuing Operation Net Minority Interest")
+    ebitda_row = _row(income, "EBITDA", "Normalized EBITDA")
+    if ni_row is None:
+        return {}
+
+    close = hist["Close"]
+    shares = data.shares_out * 1e6
+    net_debt = data.net_debt * 1e6
+    pe_list, evebitda_list, years = [], [], []
+    for col in ni_row.index:
+        try:
+            ts = col.tz_localize(None) if col.tzinfo else col
+        except (AttributeError, TypeError):
+            ts = col
+        # nearest available close on/around the fiscal year-end
+        idx = close.index.tz_localize(None) if close.index.tz is not None else close.index
+        pos = idx.searchsorted(ts)
+        if pos >= len(close):
+            pos = len(close) - 1
+        price = float(close.iloc[pos])
+        ni = ni_row.get(col)
+        years.append(getattr(col, "year", None))
+        if ni and ni == ni and ni > 0:
+            eps = ni / shares
+            if eps > 0:
+                pe_list.append(price / eps)
+        if ebitda_row is not None:
+            eb = ebitda_row.get(col)
+            if eb and eb == eb and eb > 0:
+                ev = price * shares + net_debt
+                evebitda_list.append(ev / eb)
+
+    def _avg(x):
+        x = [v for v in x if v and 0 < v < 200]
+        return float(np.median(x)) if x else None
+
+    return {"pe_avg": _avg(pe_list), "ev_ebitda_avg": _avg(evebitda_list),
+            "pe_series": pe_list, "ev_ebitda_series": evebitda_list}
 
 
 def search_companies(query: str, max_results: int = 8) -> list[dict]:
@@ -333,6 +461,20 @@ def fetch_company_data(ticker: str) -> CompanyData:
 
     analyst = _fetch_analyst(tk)
 
+    def _f(key):
+        v = info.get(key)
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    own_multiples = {
+        "pe": _f("trailingPE"), "forward_pe": _f("forwardPE"),
+        "ev_ebitda": _f("enterpriseToEbitda"), "ev_sales": _f("enterpriseToRevenue"),
+        "pb": _f("priceToBook"),
+    }
+    dividend_ps = _f("dividendRate") or _f("trailingAnnualDividendRate") or 0.0
+
     return CompanyData(
         ticker=ticker,
         name=name,
@@ -357,5 +499,14 @@ def fetch_company_data(ticker: str) -> CompanyData:
         analyst_ltg=analyst["ltg"],
         price_targets=analyst["targets"],
         num_analysts=analyst["num_analysts"],
+        eps=_f("trailingEps"),
+        forward_eps=_f("forwardEps"),
+        book_value_ps=_f("bookValue"),
+        dividend_ps=float(dividend_ps),
+        payout_ratio=_f("payoutRatio"),
+        dividend_growth=_dividend_growth(tk),
+        own_multiples=own_multiples,
+        sector=info.get("sector") or "",
+        industry=info.get("industry") or "",
         warnings=warnings,
     )

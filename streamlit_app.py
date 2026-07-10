@@ -18,9 +18,11 @@ import pandas as pd
 import streamlit as st
 
 import charts
-from dcf import fetch_company_data, default_assumptions, run_dcf, search_companies
+from dcf import (fetch_company_data, default_assumptions, run_dcf, search_companies,
+                fetch_peer_multiples, historical_multiples)
 from dcf.assumptions import Assumptions, consensus_growth_path, linear_fade_path
 from dcf.excel_export import workbook_bytes
+from dcf import valuation as val
 
 st.set_page_config(page_title="DCF Terminal", page_icon="◆", layout="wide")
 
@@ -127,6 +129,11 @@ def load_company(ticker: str):
 @st.cache_data(show_spinner="Suche Unternehmen …")
 def search_cached(query: str):
     return search_companies(query)
+
+
+@st.cache_data(show_spinner="Lade Vergleichsunternehmen …")
+def peers_cached(tickers: tuple):
+    return fetch_peer_multiples(list(tickers))
 
 
 def pct(x) -> str:
@@ -305,7 +312,8 @@ if target:
     st.session_state["defaults"] = default_assumptions(data)
     reset_inputs(data, st.session_state["defaults"])
     st.session_state["scenarios"] = {}   # comparison set is per-company
-    st.session_state.pop("search_results", None)
+    for k in ("search_results", "peers", "histmult", "mc_result"):
+        st.session_state.pop(k, None)
 
 if "data" not in st.session_state:
     st.stop()
@@ -472,8 +480,9 @@ if result.price_perpetuity < 0 or result.equity_perpetuity < 0:
 # --------------------------------------------------------------------------
 # Tabs
 # --------------------------------------------------------------------------
-tab_val, tab_fc, tab_sens, tab_cmp, tab_exp = st.tabs(
-    ["🎯 Bewertung", "📊 Prognose", "🌡️ Sensitivität", "⚖️ Vergleich", "💾 Export & Szenarien"])
+tab_val, tab_fc, tab_sens, tab_models, tab_cmp, tab_exp = st.tabs(
+    ["🎯 Bewertung", "📊 Prognose", "🌡️ Sensitivität", "🧮 Modelle",
+     "⚖️ Vergleich", "💾 Export & Szenarien"])
 
 with tab_val:
     st.markdown("#### Bewertungsspanne (Football Field)")
@@ -575,6 +584,200 @@ with tab_sens:
         st.markdown("**WACC × Exit-Multiple**")
         st.dataframe(heat(sens_df(s["waccs"], s["multiples"], s["price_multiple"], lambda x: f"{x:.1f}x")),
                      use_container_width=True)
+
+with tab_models:
+    r_eq = assumptions.cost_of_equity()
+    st.caption(f"Eigenkapitalkosten (CAPM) für die Equity-Modelle: **{r_eq:.2%}** · "
+               f"WACC: **{result.wacc:.2%}** · alle Kurse in {pccy}.")
+
+    # --- overview of the cheap, always-available models -------------------
+    ddm_g_def = min(data.dividend_growth if data.dividend_growth is not None else 0.03, r_eq - 0.01)
+    earn_g_def = float(np.clip(np.mean(assumptions.revenue_growth_path), -0.05, 0.20))
+    ny = assumptions.forecast_years
+    payout_def = data.payout_ratio if data.payout_ratio is not None else 0.4
+
+    ov = [{"Methode": "DCF · Perpetuity", "Kurs": result.price_perpetuity},
+          {"Methode": "DCF · Exit-Multiple", "Kurs": result.price_exit}]
+    _v = val.gordon_ddm(data.dividend_ps, r_eq, ddm_g_def)
+    if _v:
+        ov.append({"Methode": "DDM (Gordon)", "Kurs": _v})
+    _v = val.residual_income(data.eps, data.book_value_ps, r_eq, earn_g_def, ny, payout_def,
+                             assumptions.perpetuity_growth)
+    if _v:
+        ov.append({"Methode": "Residual Income", "Kurs": _v})
+    _v = val.future_income(data.eps, r_eq, earn_g_def, ny, assumptions.perpetuity_growth)
+    if _v:
+        ov.append({"Methode": "Future Income", "Kurs": _v})
+
+    st.markdown("#### Methodenübersicht")
+    st.altair_chart(charts.methods_bar(ov, data.price, pccy), use_container_width=True)
+    st.caption("Standard-Parameter; Feineinstellung in den Reitern unten. Rote Linie = Marktkurs.")
+
+    m_rev, m_rel, m_hist, m_ddm, m_ri, m_fi, m_mc = st.tabs(
+        ["Reverse DCF", "Relative (Comps)", "Hist. Multiples", "DDM",
+         "Residual Income", "Future Income", "Monte Carlo"])
+
+    # ---- Reverse DCF -----------------------------------------------------
+    with m_rev:
+        st.markdown("**Welche Annahme preist der Markt ein?** Löse die DCF rückwärts "
+                    "auf den Zielkurs.")
+        param_label = {"Umsatzwachstum (konstant p.a.)": "growth", "EBITDA-Marge": "margin",
+                       "WACC": "wacc", "Terminal Growth": "terminal_growth",
+                       "Exit-EBITDA-Multiple": "exit_multiple"}
+        rc1, rc2 = st.columns(2)
+        choice = rc1.selectbox("Annahme", list(param_label), key="rev_param")
+        tgt = rc2.number_input(f"Zielkurs ({pccy})", value=float(round(data.price, 2)),
+                               step=1.0, key="rev_target")
+        param = param_label[choice]
+        x = val.reverse_solve(data, assumptions, param, tgt)
+        if x is None:
+            st.warning("Kein Wert im plausiblen Bereich — der Zielkurs lässt sich mit dieser "
+                       "Annahme allein nicht erreichen. Andere Annahme wählen.")
+        else:
+            disp = f"{x:.1f}x" if param == "exit_multiple" else f"{x:.1%}"
+            st.metric(f"Impliziert: {choice}", disp)
+            st.caption(f"Ein Kurs von {tgt:,.2f} {pccy} entspricht **{disp}** — bei sonst "
+                       "unveränderten Annahmen.")
+
+    # ---- Relative valuation (comps) --------------------------------------
+    with m_rel:
+        st.markdown(f"**Peer-Multiples** (Median) angewandt auf {data.ticker}. "
+                    f"Branche: *{data.sector or '–'} / {data.industry or '–'}*.")
+        pc1, pc2 = st.columns([3, 1])
+        peers_str = pc1.text_input("Vergleichs-Ticker (kommagetrennt)", key="peers_in",
+                                   placeholder="z. B. MSFT, GOOGL, DELL, HPQ")
+        if pc2.button("Comps laden", use_container_width=True, key="peers_btn") and peers_str.strip():
+            tks = tuple(t.strip().upper() for t in peers_str.split(",") if t.strip())
+            st.session_state["peers"] = peers_cached(tks)
+        peers = st.session_state.get("peers", [])
+        if peers:
+            rv = val.relative_valuation(data, peers)
+            dfp = pd.DataFrame(peers)
+            show = dfp[["ticker", "name", "pe", "forward_pe", "ev_ebitda", "ev_sales", "pb"]].copy()
+            show.columns = ["Ticker", "Name", "P/E", "Fwd P/E", "EV/EBITDA", "EV/Umsatz", "P/B"]
+            st.dataframe(show.style.format({c: "{:.1f}" for c in
+                         ["P/E", "Fwd P/E", "EV/EBITDA", "EV/Umsatz", "P/B"]}, na_rep="–"),
+                         hide_index=True, use_container_width=True)
+            if rv["prices"]:
+                rows = [{"Methode": k, "Kurs": v} for k, v in rv["prices"].items()]
+                st.altair_chart(charts.methods_bar(rows, data.price, pccy), use_container_width=True)
+        else:
+            st.info("Gib Vergleichsunternehmen (Ticker) ein und lade die Comps.")
+
+    # ---- Historical multiples --------------------------------------------
+    with m_hist:
+        st.markdown("**Eigene historische Multiples** (Ø der letzten Jahre) auf aktuelle Kennzahlen.")
+        if st.button("Historische Multiples berechnen", key="hist_btn"):
+            with st.spinner("Lade Kurshistorie …"):
+                st.session_state["histmult"] = historical_multiples(data.ticker, data)
+        hm = st.session_state.get("histmult")
+        if hm and (hm.get("pe_avg") or hm.get("ev_ebitda_avg")):
+            hv = val.historical_valuation(data, hm)
+            hc1, hc2 = st.columns(2)
+            hc1.metric("Ø P/E (historisch)", f"{hm['pe_avg']:.1f}x" if hm.get("pe_avg") else "–")
+            hc2.metric("Ø EV/EBITDA (historisch)", f"{hm['ev_ebitda_avg']:.1f}x" if hm.get("ev_ebitda_avg") else "–")
+            if hv["prices"]:
+                rows = [{"Methode": k, "Kurs": v} for k, v in hv["prices"].items()]
+                st.altair_chart(charts.methods_bar(rows, data.price, pccy), use_container_width=True)
+            st.caption("⚠️ Näherung: Aktienanzahl und Net Debt werden mit heutigen Werten angesetzt.")
+        elif hm is not None:
+            st.warning("Keine ausreichende Historie verfügbar.")
+        else:
+            st.info("Auf den Button klicken, um die historischen Multiples zu berechnen.")
+
+    # ---- DDM -------------------------------------------------------------
+    with m_ddm:
+        if not data.dividend_ps:
+            st.info(f"{data.name} zahlt aktuell keine Dividende — DDM nicht anwendbar.")
+        else:
+            st.markdown(f"Dividende je Aktie: **{data.dividend_ps:.2f} {pccy}** · "
+                        f"Payout: {pct(data.payout_ratio)}")
+            d1, d2, d3 = st.columns(3)
+            r = d1.number_input("Eigenkapitalkosten r (%)", value=round(r_eq * 100, 2),
+                                step=0.25, key="ddm_r") / 100
+            g1 = d2.number_input("Wachstum Stufe 1 (%)",
+                                 value=round((data.dividend_growth or 0.04) * 100, 2),
+                                 step=0.5, key="ddm_g1") / 100
+            yrs = d3.number_input("Jahre Stufe 1", 1, 20, 5, key="ddm_years")
+            g2 = st.slider("Ewiges Wachstum Stufe 2 (%)", -1.0, 6.0, 2.0, 0.25, key="ddm_g2") / 100
+            gordon = val.gordon_ddm(data.dividend_ps, r, min(g1, r - 0.005))
+            two = val.two_stage_ddm(data.dividend_ps, r, g1, int(yrs), min(g2, r - 0.005))
+            o1, o2 = st.columns(2)
+            o1.metric("Gordon-Growth-Wert", f"{gordon:,.2f} {pccy}" if gordon else "n.a.",
+                      f"{gordon/data.price-1:+.1%}" if gordon else None, delta_color="off")
+            o2.metric("2-Stufen-DDM", f"{two:,.2f} {pccy}" if two else "n.a.",
+                      f"{two/data.price-1:+.1%}" if two else None, delta_color="off")
+            if (gordon and g1 >= r) or (two and g2 >= r):
+                st.caption("Hinweis: Wachstum muss kleiner als r sein.")
+
+    # ---- Residual Income -------------------------------------------------
+    with m_ri:
+        if data.eps is None or data.book_value_ps is None:
+            st.info("EPS oder Buchwert nicht verfügbar — Residual-Income-Modell nicht anwendbar.")
+        else:
+            st.markdown(f"EPS: **{data.eps:.2f}** · Buchwert je Aktie: **{data.book_value_ps:.2f} {pccy}**")
+            ri1, ri2, ri3 = st.columns(3)
+            r = ri1.number_input("Eigenkapitalkosten r (%)", value=round(r_eq * 100, 2),
+                                 step=0.25, key="ri_r") / 100
+            g = ri2.number_input("Gewinnwachstum (%)", value=round(earn_g_def * 100, 2),
+                                 step=0.5, key="ri_g") / 100
+            yrs = ri3.number_input("Prognosejahre", 3, 20, ny, key="ri_years")
+            rp1, rp2 = st.columns(2)
+            payout = rp1.slider("Ausschüttungsquote (%)", 0.0, 100.0,
+                                float(round(payout_def * 100, 0)), 5.0, key="ri_payout") / 100
+            tg = rp2.slider("Terminales RI-Wachstum (%)", -1.0, 5.0, 2.0, 0.25, key="ri_tg") / 100
+            v = val.residual_income(data.eps, data.book_value_ps, r, g, int(yrs), payout, tg)
+            st.metric("Residual-Income-Wert je Aktie", f"{v:,.2f} {pccy}" if v else "n.a.",
+                      f"{v/data.price-1:+.1%}" if v else None, delta_color="off")
+            st.caption("V = Buchwert + Σ Barwert der Residualgewinne (EPS − r·Buchwert) + Terminalwert.")
+
+    # ---- Future Income ---------------------------------------------------
+    with m_fi:
+        if data.eps is None or data.eps <= 0:
+            st.info("Kein positives EPS verfügbar — Future-Income-Modell nicht anwendbar.")
+        else:
+            st.markdown(f"Aktuelles EPS: **{data.eps:.2f} {pccy}** — diskontierte künftige Gewinne.")
+            f1, f2, f3 = st.columns(3)
+            r = f1.number_input("Eigenkapitalkosten r (%)", value=round(r_eq * 100, 2),
+                                step=0.25, key="fi_r") / 100
+            g = f2.number_input("Gewinnwachstum (%)", value=round(earn_g_def * 100, 2),
+                                step=0.5, key="fi_g") / 100
+            yrs = f3.number_input("Prognosejahre", 3, 20, ny, key="fi_years")
+            tg = st.slider("Ewiges Gewinnwachstum (%)", -1.0, 5.0, 2.0, 0.25, key="fi_tg") / 100
+            v = val.future_income(data.eps, r, g, int(yrs), tg)
+            st.metric("Future-Income-Wert je Aktie", f"{v:,.2f} {pccy}" if v else "n.a.",
+                      f"{v/data.price-1:+.1%}" if v else None, delta_color="off")
+            st.caption("V = Σ Barwert projizierter Gewinne je Aktie + Terminalwert (mit r diskontiert).")
+
+    # ---- Monte Carlo -----------------------------------------------------
+    with m_mc:
+        st.markdown("**Monte-Carlo-Simulation** der DCF: Wachstum, Marge, WACC und Terminal "
+                    "Growth werden zufällig um die aktuellen Annahmen variiert.")
+        mc1, mc2, mc3 = st.columns(3)
+        n_sims = mc1.select_slider("Simulationen", [500, 1000, 2000, 5000], value=2000, key="mc_n")
+        sig_g = mc2.slider("σ Wachstum (pp)", 0.5, 8.0, 3.0, 0.5, key="mc_sg") / 100
+        sig_m = mc3.slider("σ EBITDA-Marge (pp)", 0.5, 8.0, 3.0, 0.5, key="mc_sm") / 100
+        mc4, mc5 = st.columns(2)
+        sig_w = mc4.slider("σ WACC (pp)", 0.25, 3.0, 1.0, 0.25, key="mc_sw") / 100
+        sig_tg = mc5.slider("σ Terminal Growth (pp)", 0.1, 2.0, 0.5, 0.1, key="mc_stg") / 100
+        if st.button("▶ Simulation starten", type="primary", key="mc_run"):
+            with st.spinner(f"Simuliere {n_sims} Szenarien …"):
+                st.session_state["mc_result"] = val.monte_carlo(
+                    data, assumptions, n_sims=int(n_sims), sig_growth=sig_g,
+                    sig_margin=sig_m, sig_wacc=sig_w, sig_tg=sig_tg, mid_year=mid_year)
+        mcres = st.session_state.get("mc_result")
+        if mcres and mcres.get("stats"):
+            s2 = mcres["stats"]
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Median", f"{s2['p50']:,.0f} {pccy}")
+            k2.metric("P5 – P95", f"{s2['p5']:,.0f} – {s2['p95']:,.0f}")
+            k3.metric("Mittelwert", f"{s2['mean']:,.0f} {pccy}")
+            k4.metric("P(Kurs > Markt)", f"{s2['prob_above_market']:.0%}")
+            st.altair_chart(charts.monte_carlo_hist(mcres["prices"], data.price, s2["p50"], pccy),
+                            use_container_width=True)
+            st.caption("Rote Linie = Marktkurs, helle Linie = Median der Simulation.")
+        else:
+            st.info("Parameter wählen und **Simulation starten**.")
 
 with tab_cmp:
     scns: dict = st.session_state.setdefault("scenarios", {})

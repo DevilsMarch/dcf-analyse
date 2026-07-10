@@ -26,9 +26,15 @@ wieder laden (Seitenleiste). Im Tab **⚖️ Vergleich** mehrere Varianten
 (z. B. Bull / Base / Bear) sammeln und nebeneinander vergleichen — Kennzahlen-
 Tabelle plus Charts (impliziter Kurs je Szenario, Wachstumskurven).
 
+**Weitere Bewertungsmodelle (Tab „Modelle"):** Reverse DCF (welche Annahme
+preist der Markt ein?), Relative Valuation über Peer-Multiples, historische
+Multiple-Analyse, Dividend Discount Model (Gordon + 2-Stufen), Residual Income,
+Future Income (disk. Gewinne) und eine **Monte-Carlo-Simulation** der DCF.
+
 **Visualisierung:** Wachstumskurve, Treiber-Kurven, Umsatz/EBITDA, Free Cash Flow
-& Barwert, Wertzusammensetzung des EV, und ein **Football-Field-Chart**
-(DCF-Methoden + Sensitivitätsspanne vs. Analysten-Kursziele vs. aktueller Kurs).
+& Barwert, Wertzusammensetzung des EV, Methodenübersicht, Monte-Carlo-Histogramm
+und ein **Football-Field-Chart** (DCF-Methoden + Sensitivitätsspanne vs.
+Analysten-Kursziele vs. aktueller Kurs).
 
 Eine DCF lebt von den Zukunfts-Annahmen — die kann keine API liefern. Deshalb
 semi-automatisch: die Maschine liefert einen fundierten Startpunkt, du triffst

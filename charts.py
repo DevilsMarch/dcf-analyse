@@ -181,5 +181,38 @@ def scenario_growth(series: list[dict]) -> alt.Chart:
     ).properties(height=280)
 
 
+def methods_bar(rows: list[dict], market_price: float, ccy: str) -> alt.Chart:
+    """rows: [{'Methode','Kurs'}] — implied price per valuation method vs market."""
+    df = pd.DataFrame(rows)
+    order = list(df["Methode"])
+    bars = alt.Chart(df).mark_bar(height=20, cornerRadius=3, color=GOLD).encode(
+        y=alt.Y("Methode:N", sort=order, axis=alt.Axis(title=None, labelColor="#CFC7B2", labelLimit=220)),
+        x=alt.X("Kurs:Q", axis=alt.Axis(title=f"Impliziter Kurs ({ccy})", **_axis_kwargs())),
+        tooltip=["Methode:N", alt.Tooltip("Kurs:Q", format=",.2f")],
+    )
+    labels = alt.Chart(df).mark_text(align="left", dx=4, color="#EDE9DE", fontSize=11).encode(
+        y=alt.Y("Methode:N", sort=order), x="Kurs:Q", text=alt.Text("Kurs:Q", format=",.0f"))
+    cur = pd.DataFrame({"p": [market_price]})
+    rule = alt.Chart(cur).mark_rule(color=RED, strokeDash=[6, 4], strokeWidth=2).encode(x="p:Q")
+    rtxt = alt.Chart(cur).mark_text(color=RED, dy=-6, align="left", dx=3, fontSize=11,
+                                    fontWeight="bold").encode(x="p:Q", text=alt.value(f"Kurs {market_price:,.0f}"))
+    return (bars + labels + rule + rtxt).properties(height=max(160, 40 * len(rows)))
+
+
+def monte_carlo_hist(prices, market_price: float, median: float, ccy: str) -> alt.Chart:
+    df = pd.DataFrame({"Kurs": prices})
+    hist = alt.Chart(df).mark_bar(color=GOLD, opacity=0.85).encode(
+        x=alt.X("Kurs:Q", bin=alt.Bin(maxbins=40),
+                axis=alt.Axis(title=f"Impliziter Kurs ({ccy})", **_axis_kwargs())),
+        y=alt.Y("count()", axis=alt.Axis(title="Simulationen", **_axis_kwargs())),
+        tooltip=[alt.Tooltip("count()", title="Anzahl")],
+    )
+    m = alt.Chart(pd.DataFrame({"p": [market_price]})).mark_rule(
+        color=RED, strokeWidth=2, strokeDash=[6, 4]).encode(x="p:Q")
+    med = alt.Chart(pd.DataFrame({"p": [median]})).mark_rule(
+        color=CREAM, strokeWidth=2).encode(x="p:Q")
+    return (hist + m + med).properties(height=300)
+
+
 def _axis_kwargs() -> dict:
     return {"labelColor": "#CFC7B2", "titleColor": "#CFC7B2", "gridColor": "#26221A"}
