@@ -48,8 +48,21 @@ def scalars_now() -> dict:
 
 def assemble_assumptions(scalars: dict, drivers: dict, data, dflt: Assumptions) -> Assumptions:
     """Build an Assumptions object from a scenario dict (scalars in display units,
-    drivers as percent lists). Shared by the live model and the comparison tab."""
-    n = int(scalars["forecast_years"])
+    drivers as percent lists). Shared by the live model and the comparison tab.
+
+    Streamlit drops the session_state of widgets that are not currently rendered
+    (e.g. the CAPM build-up sliders when "WACC direkt vorgeben" is active), so any
+    scalar may be missing/None — `num()` falls back to the company defaults, which
+    are harmless because the inactive inputs don't affect the result anyway.
+    """
+    def num(key, fb):
+        v = scalars.get(key)
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return float(fb)
+
+    n = int(num("forecast_years", dflt.forecast_years))
 
     def col(name, fb):
         vals = [float(v) / 100 for v in list(drivers.get(name, []))[:n]]
@@ -61,22 +74,25 @@ def assemble_assumptions(scalars: dict, drivers: dict, data, dflt: Assumptions) 
     cp = col("Capex %", dflt.capex_pct_revenue)
     wp = col("ΔNWC %", dflt.nwc_pct_revenue_change)
     direct = scalars.get("wacc_mode") == "Direkt vorgeben"
-    ew = float(scalars["ew"]) / 100
+    ew = num("ew", dflt.equity_weight * 100) / 100
     return Assumptions(
         forecast_years=n,
         revenue_growth_path=gp, ebitda_margin_path=mp, da_pct_path=dp,
         capex_pct_path=cp, nwc_pct_path=wp, growth_source="manual",
-        initial_revenue_growth=gp[0], terminal_revenue_growth=float(scalars["perp_g"]) / 100,
+        initial_revenue_growth=gp[0], terminal_revenue_growth=num("perp_g", dflt.perpetuity_growth * 100) / 100,
         ebitda_margin=mp[0], da_pct_revenue=dp[0], capex_pct_revenue=cp[0],
-        nwc_pct_revenue_change=wp[0], tax_rate=float(scalars["tax_rate"]) / 100,
-        risk_free=float(scalars["rf"]) / 100, equity_risk_premium=float(scalars["erp"]) / 100,
-        beta=float(scalars["beta"]), pretax_cost_of_debt=float(scalars["kd"]) / 100,
+        nwc_pct_revenue_change=wp[0], tax_rate=num("tax_rate", dflt.tax_rate * 100) / 100,
+        risk_free=num("rf", dflt.risk_free * 100) / 100,
+        equity_risk_premium=num("erp", dflt.equity_risk_premium * 100) / 100,
+        beta=num("beta", dflt.beta), pretax_cost_of_debt=num("kd", dflt.pretax_cost_of_debt * 100) / 100,
         equity_weight=ew, debt_weight=1 - ew,
-        wacc_override=float(scalars["wacc_override"]) / 100 if direct else None,
-        perpetuity_growth=float(scalars["perp_g"]) / 100,
-        exit_ebitda_multiple=float(scalars["exit_mult"]),
-        net_debt_override=float(scalars["net_debt"]), minority_interests=float(scalars["minorities"]),
-        pension_liability=float(scalars["pension"]), associates=float(scalars["associates"]),
+        wacc_override=num("wacc_override", dflt.wacc() * 100) / 100 if direct else None,
+        perpetuity_growth=num("perp_g", dflt.perpetuity_growth * 100) / 100,
+        exit_ebitda_multiple=num("exit_mult", dflt.exit_ebitda_multiple),
+        net_debt_override=num("net_debt", data.net_debt),
+        minority_interests=num("minorities", dflt.minority_interests),
+        pension_liability=num("pension", dflt.pension_liability),
+        associates=num("associates", dflt.associates),
     )
 
 
@@ -132,7 +148,9 @@ def apply_scenario(scn: dict, data):
     """Rehydrate all widget state from a saved scenario (same ticker)."""
     ss = st.session_state
     for k, v in scn.get("scalars", {}).items():
-        if k in SCALAR_KEYS:
+        # Skip None (e.g. build-up sliders saved while WACC was set directly) so
+        # we don't feed None into a widget's session_state.
+        if k in SCALAR_KEYS and v is not None:
             ss[k] = v
     drivers = scn.get("drivers")
     if drivers:
