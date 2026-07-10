@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Local tooling / scratch (root-anchored so package files like __init__.py stay)
+.claude/
+/_*.xlsx
+/_*.py
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Downloaded outputs
+DCF_*.xlsx
+Szenario_*.json

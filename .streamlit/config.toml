@@ -1,0 +1,13 @@
+# The charts use dark-friendly colours, so pin the dark theme for consistency
+# across viewers (also on Streamlit Community Cloud).
+[theme]
+base = "dark"
+primaryColor = "#4C86C6"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#1A1E27"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = true
