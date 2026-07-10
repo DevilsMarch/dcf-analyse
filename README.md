@@ -43,7 +43,7 @@ pip install -r requirements.txt
 ## Starten
 
 ```bash
-streamlit run app.py
+streamlit run streamlit_app.py
 ```
 
 Die App öffnet sich im Browser (Standard: http://localhost:8501).
@@ -64,7 +64,7 @@ So wird aus der App eine echte Webseite mit fester URL. Du brauchst einen
    ```
 2. Auf **https://share.streamlit.io** mit GitHub anmelden → **"Create app"** →
    **"Deploy a public app from GitHub"**.
-3. Repository wählen, **Branch** `main`, **Main file path** `app.py`.
+3. Repository wählen, **Branch** `main`, **Main file path** `streamlit_app.py`.
 4. Unter *Advanced settings* **Python 3.11** (oder 3.12/3.13) wählen. Klick auf
    **Deploy** — nach ~2 Minuten läuft die App unter
    `https://<name>.streamlit.app`.
@@ -91,7 +91,7 @@ neu. `requirements.txt` und `.streamlit/config.toml` sind bereits enthalten.
 ## Projektstruktur
 
 ```
-app.py                 Streamlit-Web-App (UI, Wachstums-Editor, Regler, Tabs, Download)
+streamlit_app.py       Streamlit-Web-App (UI, Treiber-Tabelle, Regler, Tabs, Vergleich, Download)
 charts.py              Altair-Charts (Wachstumskurve, FCF, Football-Field, ...)
 dcf/
   data.py              Daten + Analystenkonsens holen & normalisieren (yfinance)

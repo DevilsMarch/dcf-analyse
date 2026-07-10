@@ -6,7 +6,7 @@ table (revenue growth, EBITDA margin, D&A, capex, ΔNWC) and every other
 assumption are editable; results and charts update live. Save/load scenarios as
 JSON and download a formula-driven Excel workbook at any time.
 
-Run:  streamlit run app.py
+Run:  streamlit run streamlit_app.py
 """
 
 from __future__ import annotations
