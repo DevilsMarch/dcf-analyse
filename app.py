@@ -41,6 +41,51 @@ def pct(x) -> str:
     return f"{x:.1%}" if x is not None and not (isinstance(x, float) and np.isnan(x)) else "–"
 
 
+def scalars_now() -> dict:
+    """Snapshot the current scalar widget values (display units) from state."""
+    return {k: st.session_state.get(k) for k in SCALAR_KEYS}
+
+
+def assemble_assumptions(scalars: dict, drivers: dict, data, dflt: Assumptions) -> Assumptions:
+    """Build an Assumptions object from a scenario dict (scalars in display units,
+    drivers as percent lists). Shared by the live model and the comparison tab."""
+    n = int(scalars["forecast_years"])
+
+    def col(name, fb):
+        vals = [float(v) / 100 for v in list(drivers.get(name, []))[:n]]
+        return vals or [fb]
+
+    gp = col("Wachstum %", dflt.initial_revenue_growth)
+    mp = col("EBITDA-Marge %", dflt.ebitda_margin)
+    dp = col("D&A %", dflt.da_pct_revenue)
+    cp = col("Capex %", dflt.capex_pct_revenue)
+    wp = col("ΔNWC %", dflt.nwc_pct_revenue_change)
+    direct = scalars.get("wacc_mode") == "Direkt vorgeben"
+    ew = float(scalars["ew"]) / 100
+    return Assumptions(
+        forecast_years=n,
+        revenue_growth_path=gp, ebitda_margin_path=mp, da_pct_path=dp,
+        capex_pct_path=cp, nwc_pct_path=wp, growth_source="manual",
+        initial_revenue_growth=gp[0], terminal_revenue_growth=float(scalars["perp_g"]) / 100,
+        ebitda_margin=mp[0], da_pct_revenue=dp[0], capex_pct_revenue=cp[0],
+        nwc_pct_revenue_change=wp[0], tax_rate=float(scalars["tax_rate"]) / 100,
+        risk_free=float(scalars["rf"]) / 100, equity_risk_premium=float(scalars["erp"]) / 100,
+        beta=float(scalars["beta"]), pretax_cost_of_debt=float(scalars["kd"]) / 100,
+        equity_weight=ew, debt_weight=1 - ew,
+        wacc_override=float(scalars["wacc_override"]) / 100 if direct else None,
+        perpetuity_growth=float(scalars["perp_g"]) / 100,
+        exit_ebitda_multiple=float(scalars["exit_mult"]),
+        net_debt_override=float(scalars["net_debt"]), minority_interests=float(scalars["minorities"]),
+        pension_liability=float(scalars["pension"]), associates=float(scalars["associates"]),
+    )
+
+
+def run_scenario(scn: dict, data, dflt: Assumptions):
+    a = assemble_assumptions(scn["scalars"], scn["drivers"], data, dflt)
+    r = run_dcf(data, a, mid_year=bool(scn["scalars"].get("mid_year", True)))
+    return a, r
+
+
 def default_drivers_df(data, a: Assumptions, n: int, perp: float) -> pd.DataFrame:
     fc_years = [(data.years[-1] if data.years else 0) + i for i in range(1, n + 1)]
     gp, _ = consensus_growth_path(data, n, perp, fallback_initial=a.initial_revenue_growth)
@@ -127,6 +172,7 @@ if load or "data" not in st.session_state:
     st.session_state["data"] = data
     st.session_state["defaults"] = default_assumptions(data)
     reset_inputs(data, st.session_state["defaults"])
+    st.session_state["scenarios"] = {}   # comparison set is per-company
 
 data = st.session_state["data"]
 defaults: Assumptions = st.session_state["defaults"]
@@ -255,26 +301,12 @@ with ed2:
 # --------------------------------------------------------------------------
 # Assemble assumptions and run
 # --------------------------------------------------------------------------
-assumptions = Assumptions(
-    forecast_years=forecast_years,
-    revenue_growth_path=growth_path,
-    ebitda_margin_path=margin_path, da_pct_path=da_path,
-    capex_pct_path=capex_path, nwc_pct_path=nwc_path,
-    growth_source="manual",
-    initial_revenue_growth=growth_path[0] if growth_path else defaults.initial_revenue_growth,
-    terminal_revenue_growth=perp_g,
-    ebitda_margin=margin_path[0] if margin_path else defaults.ebitda_margin,
-    da_pct_revenue=da_path[0] if da_path else defaults.da_pct_revenue,
-    capex_pct_revenue=capex_path[0] if capex_path else defaults.capex_pct_revenue,
-    nwc_pct_revenue_change=nwc_path[0] if nwc_path else defaults.nwc_pct_revenue_change,
-    tax_rate=tax_rate,
-    risk_free=rf, equity_risk_premium=erp, beta=beta, pretax_cost_of_debt=kd,
-    equity_weight=ew, debt_weight=dw, wacc_override=wacc_override,
-    perpetuity_growth=perp_g, exit_ebitda_multiple=exit_mult,
-    net_debt_override=net_debt, minority_interests=minorities,
-    pension_liability=pension, associates=associates,
-)
-result = run_dcf(data, assumptions, mid_year=mid_year)
+current_scn = {
+    "ticker": data.ticker,
+    "scalars": scalars_now(),
+    "drivers": {c: list(edited[c]) for c in edited.columns},
+}
+assumptions, result = run_scenario(current_scn, data, defaults)
 
 # --------------------------------------------------------------------------
 # Header metrics
@@ -296,8 +328,8 @@ r3.metric("Ø beider Methoden", f"{avg:,.2f} {pccy}", f"{avg / data.price - 1:+.
 # --------------------------------------------------------------------------
 # Tabs
 # --------------------------------------------------------------------------
-tab_val, tab_fc, tab_sens, tab_exp = st.tabs(
-    ["🎯 Bewertung", "📊 Prognose", "🌡️ Sensitivität", "💾 Export & Szenarien"])
+tab_val, tab_fc, tab_sens, tab_cmp, tab_exp = st.tabs(
+    ["🎯 Bewertung", "📊 Prognose", "🌡️ Sensitivität", "⚖️ Vergleich", "💾 Export & Szenarien"])
 
 with tab_val:
     st.markdown("#### Bewertungsspanne (Football Field)")
@@ -399,6 +431,89 @@ with tab_sens:
         st.dataframe(heat(sens_df(s["waccs"], s["multiples"], s["price_multiple"], lambda x: f"{x:.1f}x")),
                      use_container_width=True)
 
+with tab_cmp:
+    scns: dict = st.session_state.setdefault("scenarios", {})
+    st.markdown(f"Sammle Varianten (z. B. **Bull / Base / Bear**) und vergleiche sie "
+                f"nebeneinander. Alle beziehen sich auf **{data.ticker}**.")
+
+    ac1, ac2, ac3 = st.columns([2, 1, 1])
+    nm = ac1.text_input("Name", value=f"Szenario {len(scns) + 1}", key="cmp_name",
+                        label_visibility="collapsed", placeholder="Name des Szenarios")
+    if ac2.button("＋ Aktuelles sichern", use_container_width=True):
+        scns[nm.strip() or f"Szenario {len(scns) + 1}"] = current_scn
+        st.rerun()
+    if scns and ac3.button("🗑️ Alle löschen", use_container_width=True):
+        scns.clear()
+        st.rerun()
+
+    if scns:
+        rm = st.multiselect("Einzelne entfernen", list(scns.keys()), key="cmp_rm")
+        if rm:
+            for k in rm:
+                scns.pop(k, None)
+            st.rerun()
+
+    # Evaluate the live state plus every stored scenario
+    cols = {"Aktuell (live)": (assumptions, result)}
+    for name, scn in scns.items():
+        try:
+            cols[name] = run_scenario(scn, data, defaults)
+        except Exception as e:  # noqa: BLE001
+            st.warning(f"Szenario '{name}' konnte nicht berechnet werden: {e}")
+
+    def _metrics(a, r):
+        return {
+            "Impl. Kurs · Perpetuity": r.price_perpetuity,
+            "Impl. Kurs · Exit-Multiple": r.price_exit,
+            "Prämie vs. Markt (Perp.)": r.premium_perpetuity,
+            "Enterprise Value (Mio)": r.ev_perpetuity,
+            "Equity Value (Mio)": r.equity_perpetuity,
+            "WACC": r.wacc,
+            "Ø Umsatzwachstum": float(np.mean(a.revenue_growth_path)),
+            "Ø EBITDA-Marge": float(np.mean(a.ebitda_margin_path)),
+            "Terminal Growth": a.perpetuity_growth,
+            "Exit-Multiple": a.exit_ebitda_multiple,
+            "TV-Anteil am EV": (r.pv_tv_perpetuity / r.ev_perpetuity) if r.ev_perpetuity else 0.0,
+        }
+
+    fmts = {
+        "Impl. Kurs · Perpetuity": lambda v: f"{v:,.2f} {pccy}",
+        "Impl. Kurs · Exit-Multiple": lambda v: f"{v:,.2f} {pccy}",
+        "Prämie vs. Markt (Perp.)": lambda v: f"{v:+.1%}",
+        "Enterprise Value (Mio)": lambda v: f"{v:,.0f}",
+        "Equity Value (Mio)": lambda v: f"{v:,.0f}",
+        "WACC": lambda v: f"{v:.2%}",
+        "Ø Umsatzwachstum": lambda v: f"{v:.1%}",
+        "Ø EBITDA-Marge": lambda v: f"{v:.1%}",
+        "Terminal Growth": lambda v: f"{v:.2%}",
+        "Exit-Multiple": lambda v: f"{v:.1f}x",
+        "TV-Anteil am EV": lambda v: f"{v:.0%}",
+    }
+    table = pd.DataFrame({name: _metrics(a, r) for name, (a, r) in cols.items()})
+    disp = table.copy().astype(object)
+    for m in disp.index:
+        disp.loc[m] = [fmts[m](v) for v in table.loc[m]]
+    disp.insert(0, "Kennzahl", disp.index)
+    st.dataframe(disp, hide_index=True, use_container_width=True)
+
+    price_rows = [{"Szenario": name, "Perpetuity": r.price_perpetuity,
+                   "Exit-Multiple": r.price_exit} for name, (a, r) in cols.items()]
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        st.markdown("**Impliziter Kurs je Szenario**")
+        st.altair_chart(charts.scenario_prices(price_rows, data.price, pccy),
+                        use_container_width=True)
+    with cc2:
+        st.markdown("**Umsatzwachstum je Szenario**")
+        gseries = [{"Szenario": name, "Jahr": y, "Wachstum": g}
+                   for name, (a, r) in cols.items()
+                   for y, g in zip(r.years, a.revenue_growth_path)]
+        st.altair_chart(charts.scenario_growth(gseries), use_container_width=True)
+
+    if not scns:
+        st.info("Noch keine gespeicherten Szenarien. Passe die Annahmen an und klicke "
+                "oben auf **＋ Aktuelles sichern**, um Varianten zu vergleichen.")
+
 with tab_exp:
     e1, e2 = st.columns(2)
     with e1:
@@ -412,12 +527,7 @@ with tab_exp:
     with e2:
         st.markdown("**Szenario speichern**")
         st.caption("Alle Annahmen + Treiber-Tabelle als JSON. Laden über die Seitenleiste.")
-        scenario = {
-            "ticker": data.ticker,
-            "scalars": {k: st.session_state.get(k) for k in SCALAR_KEYS},
-            "drivers": {c: list(edited[c]) for c in edited.columns},
-        }
         st.download_button("💾 Szenario speichern (JSON)",
-                           data=json.dumps(scenario, indent=2, default=str).encode("utf-8"),
+                           data=json.dumps(current_scn, indent=2, default=str).encode("utf-8"),
                            file_name=f"Szenario_{data.ticker}.json",
                            mime="application/json", use_container_width=True)

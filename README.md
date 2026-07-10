@@ -22,7 +22,9 @@ Formeln** herunterladbar.
 - EV→Equity-Bridge (Net Debt, Minderheiten, Pension, Beteiligungen)
 
 **Szenarien:** aktuelle Annahmen + Treiber-Tabelle als JSON speichern und später
-wieder laden (Seitenleiste), um Varianten zu vergleichen.
+wieder laden (Seitenleiste). Im Tab **⚖️ Vergleich** mehrere Varianten
+(z. B. Bull / Base / Bear) sammeln und nebeneinander vergleichen — Kennzahlen-
+Tabelle plus Charts (impliziter Kurs je Szenario, Wachstumskurven).
 
 **Visualisierung:** Wachstumskurve, Treiber-Kurven, Umsatz/EBITDA, Free Cash Flow
 & Barwert, Wertzusammensetzung des EV, und ein **Football-Field-Chart**

@@ -136,5 +136,38 @@ def football_field(rows: list[dict], current_price: float, ccy: str) -> alt.Char
     return (bars + points + rule + rule_txt).properties(height=max(150, 42 * len(rows)))
 
 
+def scenario_prices(rows: list[dict], current_price: float, ccy: str) -> alt.Chart:
+    """rows: [{'Szenario', 'Perpetuity', 'Exit-Multiple'}]. Grouped bars per
+    scenario with the current market price as a dashed reference line."""
+    df = pd.DataFrame(rows).melt("Szenario", var_name="Methode", value_name="Kurs")
+    order = [r["Szenario"] for r in rows]
+    bars = alt.Chart(df).mark_bar().encode(
+        x=alt.X("Szenario:N", sort=order, axis=alt.Axis(labelAngle=0, **_axis_kwargs()), title=None),
+        xOffset="Methode:N",
+        y=alt.Y("Kurs:Q", axis=alt.Axis(**_axis_kwargs()), title=f"Impliziter Kurs ({ccy})"),
+        color=alt.Color("Methode:N",
+                        scale=alt.Scale(domain=["Perpetuity", "Exit-Multiple"], range=[BLUE, TEAL]),
+                        legend=alt.Legend(orient="top", title=None, labelColor="#C9D1D9")),
+        tooltip=["Szenario:N", "Methode:N", alt.Tooltip("Kurs:Q", format=",.2f")],
+    )
+    cur = pd.DataFrame({"p": [current_price]})
+    rule = alt.Chart(cur).mark_rule(color=RED, strokeDash=[6, 4], strokeWidth=2).encode(y="p:Q")
+    txt = alt.Chart(cur).mark_text(color=RED, dy=-6, align="left", fontSize=11,
+                                   fontWeight="bold").encode(
+        y="p:Q", x=alt.value(4), text=alt.value(f"Kurs {current_price:,.0f}"))
+    return (bars + rule + txt).properties(height=300)
+
+
+def scenario_growth(series: list[dict]) -> alt.Chart:
+    """series: [{'Szenario', 'Jahr', 'Wachstum'}] — one growth line per scenario."""
+    df = pd.DataFrame(series)
+    return alt.Chart(df).mark_line(point=True, strokeWidth=2.5).encode(
+        x=alt.X("Jahr:O", axis=_AXIS, title="Prognosejahr"),
+        y=alt.Y("Wachstum:Q", axis=alt.Axis(format="%", **_axis_kwargs()), title="Umsatzwachstum"),
+        color=alt.Color("Szenario:N", legend=alt.Legend(orient="top", title=None, labelColor="#C9D1D9")),
+        tooltip=["Szenario:N", "Jahr:O", alt.Tooltip("Wachstum:Q", format=".1%")],
+    ).properties(height=280)
+
+
 def _axis_kwargs() -> dict:
     return {"labelColor": "#C9D1D9", "titleColor": "#C9D1D9", "gridColor": "#2A2E36"}
