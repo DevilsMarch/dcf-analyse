@@ -215,17 +215,22 @@ def fetch_peer_multiples(tickers: list[str]) -> list[dict]:
     return out
 
 
-def historical_multiples(ticker: str, data: "CompanyData") -> dict:
+def historical_multiples(ticker: str, data: "CompanyData", years: "int | None" = None) -> dict:
     """Approximate the company's own historical P/E and EV/EBITDA.
 
     Uses annual net income / EBITDA together with the share price at each fiscal
     year-end. Shares outstanding and net debt are approximated with today's
     figures, so treat the result as indicative, not exact.
+
+    `years` limits the look-back to the most recent N fiscal years. Yahoo only
+    serves a few years of annual fundamentals for free, so the result reports how
+    many years were actually available/used.
     """
     tk = yf.Ticker(ticker)
+    hist_period = f"{max(int(years) + 1, 6)}y" if years else "12y"
     try:
         income = tk.financials
-        hist = tk.history(period="6y")
+        hist = tk.history(period=hist_period)
     except Exception:
         return {}
     if income is None or income.empty or hist is None or hist.empty:
@@ -237,11 +242,16 @@ def historical_multiples(ticker: str, data: "CompanyData") -> dict:
     if ni_row is None:
         return {}
 
+    # most-recent fiscal years first, then optionally limit to `years`
+    cols = sorted(ni_row.index, reverse=True)
+    if years:
+        cols = cols[:int(years)]
+
     close = hist["Close"]
     shares = data.shares_out * 1e6
     net_debt = data.net_debt * 1e6
-    pe_list, evebitda_list, years = [], [], []
-    for col in ni_row.index:
+    pe_list, evebitda_list, used_years = [], [], []
+    for col in cols:
         try:
             ts = col.tz_localize(None) if col.tzinfo else col
         except (AttributeError, TypeError):
@@ -253,7 +263,7 @@ def historical_multiples(ticker: str, data: "CompanyData") -> dict:
             pos = len(close) - 1
         price = float(close.iloc[pos])
         ni = ni_row.get(col)
-        years.append(getattr(col, "year", None))
+        used_years.append(getattr(col, "year", None))
         if ni and ni == ni and ni > 0:
             eps = ni / shares
             if eps > 0:
@@ -268,8 +278,12 @@ def historical_multiples(ticker: str, data: "CompanyData") -> dict:
         x = [v for v in x if v and 0 < v < 200]
         return float(np.median(x)) if x else None
 
+    valid_years = [y for y in used_years if y is not None]
     return {"pe_avg": _avg(pe_list), "ev_ebitda_avg": _avg(evebitda_list),
-            "pe_series": pe_list, "ev_ebitda_series": evebitda_list}
+            "pe_series": pe_list, "ev_ebitda_series": evebitda_list,
+            "n_used": len(valid_years),
+            "year_from": min(valid_years) if valid_years else None,
+            "year_to": max(valid_years) if valid_years else None}
 
 
 def search_companies(query: str, max_results: int = 8) -> list[dict]:
