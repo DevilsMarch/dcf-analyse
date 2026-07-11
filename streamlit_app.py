@@ -740,23 +740,35 @@ with tab_models:
     # ---- Historical multiples --------------------------------------------
     with m_hist:
         st.markdown("**Eigene historische Multiples** (Ø der letzten Jahre) auf aktuelle Kennzahlen.")
-        if st.button("Historische Multiples berechnen", key="hist_btn"):
+        hp1, hp2 = st.columns([1, 1])
+        period_label = hp1.selectbox("Zeitraum", ["Letzte 3 Jahre", "Letzte 5 Jahre",
+                                                  "Letzte 10 Jahre", "Max. verfügbar"],
+                                     index=1, key="hist_period")
+        period_map = {"Letzte 3 Jahre": 3, "Letzte 5 Jahre": 5, "Letzte 10 Jahre": 10,
+                      "Max. verfügbar": None}
+        if hp2.button("Berechnen / Aktualisieren", key="hist_btn", use_container_width=True):
             with st.spinner("Lade Kurshistorie …"):
-                st.session_state["histmult"] = historical_multiples(data.ticker, data)
+                st.session_state["histmult"] = historical_multiples(
+                    data.ticker, data, years=period_map[period_label])
         hm = st.session_state.get("histmult")
         if hm and (hm.get("pe_avg") or hm.get("ev_ebitda_avg")):
             hv = val.historical_valuation(data, hm)
             hc1, hc2 = st.columns(2)
             hc1.metric("Ø P/E (historisch)", f"{hm['pe_avg']:.1f}x" if hm.get("pe_avg") else "–")
             hc2.metric("Ø EV/EBITDA (historisch)", f"{hm['ev_ebitda_avg']:.1f}x" if hm.get("ev_ebitda_avg") else "–")
+            if hm.get("n_used"):
+                st.caption(f"Genutzt: **{hm['n_used']} Geschäftsjahre** "
+                           f"({hm.get('year_from')}–{hm.get('year_to')}).")
             if hv["prices"]:
                 rows = [{"Methode": k, "Kurs": v} for k, v in hv["prices"].items()]
                 st.altair_chart(charts.methods_bar(rows, data.price, pccy), use_container_width=True)
-            st.caption("⚠️ Näherung: Aktienanzahl und Net Debt werden mit heutigen Werten angesetzt.")
+            st.caption("⚠️ Näherung: Aktienanzahl und Net Debt werden mit heutigen Werten angesetzt. "
+                       "Yahoo liefert kostenlos nur wenige Jahre Fundamentaldaten — längere Zeiträume "
+                       "nutzen so viele Jahre wie verfügbar.")
         elif hm is not None:
             st.warning("Keine ausreichende Historie verfügbar.")
         else:
-            st.info("Auf den Button klicken, um die historischen Multiples zu berechnen.")
+            st.info("Zeitraum wählen und auf **Berechnen** klicken.")
 
     # ---- DDM -------------------------------------------------------------
     with m_ddm:
