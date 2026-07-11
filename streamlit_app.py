@@ -216,12 +216,14 @@ def compute_model_values(data, a: Assumptions, result) -> dict:
     ddm_g1 = _mnum("ddm_g1", (data.dividend_growth or 0.04) * 100) / 100
     ddm_years = int(_mnum("ddm_years", 5))
     ddm_g2 = _mnum("ddm_g2", 2.0) / 100
-    v = val.two_stage_ddm(data.dividend_ps, ddm_r, ddm_g1, ddm_years, min(ddm_g2, ddm_r - 0.005))
+    v = val.two_stage_ddm(_mnum("ddm_div", data.dividend_ps), ddm_r, ddm_g1, ddm_years,
+                          min(ddm_g2, ddm_r - 0.005))
     if v:
         out["DDM (2-Stufen)"] = v
 
     ri_r = _mnum("ri_r", r_eq * 100) / 100
-    v = val.residual_income(data.eps, data.book_value_ps, ri_r, _mnum("ri_g", earn_g * 100) / 100,
+    v = val.residual_income(_mnum("ri_eps", data.eps or 0), _mnum("ri_book", data.book_value_ps or 0),
+                            ri_r, _mnum("ri_g", earn_g * 100) / 100,
                             int(_mnum("ri_years", a.forecast_years)),
                             _mnum("ri_payout", (data.payout_ratio or 0.4) * 100) / 100,
                             _mnum("ri_tg", 2.0) / 100)
@@ -229,11 +231,47 @@ def compute_model_values(data, a: Assumptions, result) -> dict:
         out["Residual Income"] = v
 
     fi_r = _mnum("fi_r", r_eq * 100) / 100
-    v = val.future_income(data.eps, fi_r, _mnum("fi_g", earn_g * 100) / 100,
+    v = val.future_income(_mnum("fi_eps", data.eps or 0), fi_r, _mnum("fi_g", earn_g * 100) / 100,
                           int(_mnum("fi_years", a.forecast_years)), _mnum("fi_tg", 2.0) / 100)
     if v:
         out["Future Income"] = v
     return out
+
+
+def relative_prices(data) -> dict:
+    """Implied price per multiple from the editable Relative-tab inputs (session)."""
+    shares, ptm = data.shares_out, data.price_to_major
+    pe = _mnum("rel_pe", 0); evebitda = _mnum("rel_evebitda", 0)
+    evsales = _mnum("rel_evsales", 0); pb = _mnum("rel_pb", 0)
+    eps = _mnum("rel_eps", data.eps or 0)
+    ebitda = _mnum("rel_ebitda", data.ebitda[-1] if data.ebitda else 0)
+    rev = _mnum("rel_rev", data.revenue[-1] if data.revenue else 0)
+    book = _mnum("rel_book", data.book_value_ps or 0)
+    nd = _mnum("rel_netdebt", data.net_debt)
+    out = {}
+    if pe > 0 and eps != 0:
+        out["P/E"] = pe * eps
+    if evebitda > 0 and ebitda > 0:
+        out["EV/EBITDA"] = (evebitda * ebitda - nd) / shares * ptm
+    if evsales > 0 and rev > 0:
+        out["EV/Umsatz"] = (evsales * rev - nd) / shares * ptm
+    if pb > 0 and book != 0:
+        out["P/B"] = pb * book
+    return {k: v for k, v in out.items() if np.isfinite(v)}
+
+
+def hist_prices(data) -> dict:
+    """Implied price from the editable historical-average multiples (session)."""
+    shares, ptm = data.shares_out, data.price_to_major
+    pe = _mnum("hist_pe", 0); evebitda = _mnum("hist_evebitda", 0)
+    eps = data.eps or 0
+    ebitda = data.ebitda[-1] if data.ebitda else 0
+    out = {}
+    if pe > 0 and eps != 0:
+        out["Ø P/E"] = pe * eps
+    if evebitda > 0 and ebitda > 0:
+        out["Ø EV/EBITDA"] = (evebitda * ebitda - data.net_debt) / shares * ptm
+    return {k: v for k, v in out.items() if np.isfinite(v)}
 
 
 def run_scenario(scn: dict, data, dflt: Assumptions):
@@ -301,6 +339,26 @@ def reset_inputs(data, a: Assumptions):
     ss["fi_g"] = round(earn_g * 100, 2)
     ss["fi_years"] = int(a.forecast_years)
     ss["fi_tg"] = 2.0
+
+    # Editable base data values per model (defaults from Yahoo, user can override)
+    ss["ddm_div"] = float(round(data.dividend_ps, 4))
+    ss["ri_eps"] = float(round(data.eps, 4)) if data.eps is not None else 0.0
+    ss["ri_book"] = float(round(data.book_value_ps, 4)) if data.book_value_ps is not None else 0.0
+    ss["fi_eps"] = float(round(data.eps, 4)) if data.eps is not None else 0.0
+    # Relative valuation: applied multiples (default = company's own current) + metrics
+    om = data.own_multiples or {}
+    ss["rel_pe"] = float(round(om.get("pe") or 0.0, 2))
+    ss["rel_evebitda"] = float(round(om.get("ev_ebitda") or 0.0, 2))
+    ss["rel_evsales"] = float(round(om.get("ev_sales") or 0.0, 2))
+    ss["rel_pb"] = float(round(om.get("pb") or 0.0, 2))
+    ss["rel_eps"] = float(round(data.eps, 4)) if data.eps is not None else 0.0
+    ss["rel_ebitda"] = float(round(data.ebitda[-1], 1)) if data.ebitda else 0.0
+    ss["rel_rev"] = float(round(data.revenue[-1], 1)) if data.revenue else 0.0
+    ss["rel_book"] = float(round(data.book_value_ps, 4)) if data.book_value_ps is not None else 0.0
+    ss["rel_netdebt"] = float(round(data.net_debt, 1))
+    # Historical multiples: editable averages (filled from the computation)
+    ss["hist_pe"] = 0.0
+    ss["hist_evebitda"] = 0.0
     seed_drivers(data, a)
 
 
@@ -515,16 +573,14 @@ assumptions, result = run_scenario(current_scn, data, defaults)
 # Implied prices from all always-available models (+ on-demand ones the user has
 # already computed) — shared by the football field, the models tab and Excel.
 model_values = compute_model_values(data, assumptions, result)
-_peers = st.session_state.get("peers")
-if _peers:
-    _rv = val.relative_valuation(data, _peers)
-    if _rv["prices"]:
-        model_values["Relative (Median)"] = float(np.median(list(_rv["prices"].values())))
-_hist = st.session_state.get("histmult")
-if _hist:
-    _hv = val.historical_valuation(data, _hist)
-    if _hv["prices"]:
-        model_values["Hist. Multiples (Ø)"] = float(np.median(list(_hv["prices"].values())))
+if st.session_state.get("peers"):
+    _rp = relative_prices(data)
+    if _rp:
+        model_values["Relative (Median)"] = float(np.median(list(_rp.values())))
+if st.session_state.get("histmult") and _mnum("hist_pe", 0) > 0:
+    _hp = hist_prices(data)
+    if _hp:
+        model_values["Hist. Multiples (Ø)"] = float(np.median(list(_hp.values())))
 _mc = st.session_state.get("mc_result")
 if _mc and _mc.get("stats"):
     model_values["Monte Carlo (Median)"] = _mc["stats"]["p50"]
@@ -714,28 +770,50 @@ with tab_models:
 
     # ---- Relative valuation (comps) --------------------------------------
     with m_rel:
-        st.markdown(f"**Peer-Multiples** (Median) angewandt auf {data.ticker}. "
+        st.markdown(f"**Relative Valuation** — Multiples und Kennzahlen frei editierbar. "
                     f"Branche: *{data.sector or '–'} / {data.industry or '–'}*.")
         pc1, pc2 = st.columns([3, 1])
-        peers_str = pc1.text_input("Vergleichs-Ticker (kommagetrennt)", key="peers_in",
+        peers_str = pc1.text_input("Vergleichs-Ticker (optional, kommagetrennt)", key="peers_in",
                                    placeholder="z. B. MSFT, GOOGL, DELL, HPQ")
         if pc2.button("Comps laden", use_container_width=True, key="peers_btn") and peers_str.strip():
             tks = tuple(t.strip().upper() for t in peers_str.split(",") if t.strip())
             st.session_state["peers"] = peers_cached(tks)
         peers = st.session_state.get("peers", [])
         if peers:
-            rv = val.relative_valuation(data, peers)
             dfp = pd.DataFrame(peers)
             show = dfp[["ticker", "name", "pe", "forward_pe", "ev_ebitda", "ev_sales", "pb"]].copy()
             show.columns = ["Ticker", "Name", "P/E", "Fwd P/E", "EV/EBITDA", "EV/Umsatz", "P/B"]
             st.dataframe(show.style.format({c: "{:.1f}" for c in
                          ["P/E", "Fwd P/E", "EV/EBITDA", "EV/Umsatz", "P/B"]}, na_rep="–"),
                          hide_index=True, use_container_width=True)
-            if rv["prices"]:
-                rows = [{"Methode": k, "Kurs": v} for k, v in rv["prices"].items()]
-                st.altair_chart(charts.methods_bar(rows, data.price, pccy), use_container_width=True)
+            if st.button("↧ Peer-Median als Multiples übernehmen", key="peers_apply"):
+                med = val.relative_valuation(data, peers)["medians"]
+                st.session_state["rel_pe"] = float(round(med.get("pe") or 0, 2))
+                st.session_state["rel_evebitda"] = float(round(med.get("ev_ebitda") or 0, 2))
+                st.session_state["rel_evsales"] = float(round(med.get("ev_sales") or 0, 2))
+                st.session_state["rel_pb"] = float(round(med.get("pb") or 0, 2))
+                st.rerun()
+
+        st.markdown("**Anzuwendende Multiples** (0 = ignorieren)")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.number_input("P/E", step=0.5, key="rel_pe")
+        m2.number_input("EV/EBITDA", step=0.5, key="rel_evebitda")
+        m3.number_input("EV/Umsatz", step=0.1, key="rel_evsales")
+        m4.number_input("P/B", step=0.5, key="rel_pb")
+        st.markdown(f"**Kennzahlen von {data.ticker}**")
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.number_input(f"EPS ({pccy})", step=0.01, format="%.4f", key="rel_eps")
+        k2.number_input(f"EBITDA (Mio {ccy})", step=10.0, key="rel_ebitda")
+        k3.number_input(f"Umsatz (Mio {ccy})", step=10.0, key="rel_rev")
+        k4.number_input(f"Buchwert/Aktie ({pccy})", step=0.01, format="%.4f", key="rel_book")
+        k5.number_input(f"Net Debt (Mio {ccy})", step=10.0, key="rel_netdebt")
+
+        rp = relative_prices(data)
+        if rp:
+            rows = [{"Methode": k, "Kurs": v} for k, v in rp.items()]
+            st.altair_chart(charts.methods_bar(rows, data.price, pccy), use_container_width=True)
         else:
-            st.info("Gib Vergleichsunternehmen (Ticker) ein und lade die Comps.")
+            st.info("Trage Multiples ein (oder lade Comps und übernimm den Peer-Median).")
 
     # ---- Historical multiples --------------------------------------------
     with m_hist:
@@ -748,23 +826,25 @@ with tab_models:
                       "Max. verfügbar": None}
         if hp2.button("Berechnen / Aktualisieren", key="hist_btn", use_container_width=True):
             with st.spinner("Lade Kurshistorie …"):
-                st.session_state["histmult"] = historical_multiples(
-                    data.ticker, data, years=period_map[period_label])
+                hm = historical_multiples(data.ticker, data, years=period_map[period_label])
+                st.session_state["histmult"] = hm
+                st.session_state["hist_pe"] = float(round(hm.get("pe_avg") or 0, 2))
+                st.session_state["hist_evebitda"] = float(round(hm.get("ev_ebitda_avg") or 0, 2))
+                st.rerun()
         hm = st.session_state.get("histmult")
         if hm and (hm.get("pe_avg") or hm.get("ev_ebitda_avg")):
-            hv = val.historical_valuation(data, hm)
-            hc1, hc2 = st.columns(2)
-            hc1.metric("Ø P/E (historisch)", f"{hm['pe_avg']:.1f}x" if hm.get("pe_avg") else "–")
-            hc2.metric("Ø EV/EBITDA (historisch)", f"{hm['ev_ebitda_avg']:.1f}x" if hm.get("ev_ebitda_avg") else "–")
             if hm.get("n_used"):
-                st.caption(f"Genutzt: **{hm['n_used']} Geschäftsjahre** "
-                           f"({hm.get('year_from')}–{hm.get('year_to')}).")
-            if hv["prices"]:
-                rows = [{"Methode": k, "Kurs": v} for k, v in hv["prices"].items()]
+                st.caption(f"Berechnet aus **{hm['n_used']} Geschäftsjahren** "
+                           f"({hm.get('year_from')}–{hm.get('year_to')}). Werte editierbar:")
+            he1, he2 = st.columns(2)
+            he1.number_input("Ø P/E (historisch)", step=0.5, key="hist_pe")
+            he2.number_input("Ø EV/EBITDA (historisch)", step=0.5, key="hist_evebitda")
+            hp = hist_prices(data)
+            if hp:
+                rows = [{"Methode": k, "Kurs": v} for k, v in hp.items()]
                 st.altair_chart(charts.methods_bar(rows, data.price, pccy), use_container_width=True)
             st.caption("⚠️ Näherung: Aktienanzahl und Net Debt werden mit heutigen Werten angesetzt. "
-                       "Yahoo liefert kostenlos nur wenige Jahre Fundamentaldaten — längere Zeiträume "
-                       "nutzen so viele Jahre wie verfügbar.")
+                       "Yahoo liefert kostenlos nur wenige Jahre Fundamentaldaten.")
         elif hm is not None:
             st.warning("Keine ausreichende Historie verfügbar.")
         else:
@@ -772,18 +852,19 @@ with tab_models:
 
     # ---- DDM -------------------------------------------------------------
     with m_ddm:
-        if not data.dividend_ps:
-            st.info(f"{data.name} zahlt aktuell keine Dividende — DDM nicht anwendbar.")
+        st.markdown("**Dividend Discount Model** — alle Werte editierbar (Vorgaben von Yahoo).")
+        d0, d1, d2 = st.columns(3)
+        div = d0.number_input(f"Dividende je Aktie D₀ ({pccy})", step=0.01, format="%.4f", key="ddm_div")
+        r = d1.number_input("Eigenkapitalkosten r (%)", step=0.25, key="ddm_r") / 100
+        g1 = d2.number_input("Wachstum Stufe 1 (%)", step=0.5, key="ddm_g1") / 100
+        d3, d4 = st.columns(2)
+        yrs = d3.number_input("Jahre Stufe 1", 1, 20, key="ddm_years")
+        g2 = d4.slider("Ewiges Wachstum Stufe 2 (%)", -1.0, 6.0, step=0.25, key="ddm_g2") / 100
+        if not div or div <= 0:
+            st.info("Dividende je Aktie = 0 → DDM nicht anwendbar. Gib oben eine Dividende ein.")
         else:
-            st.markdown(f"Dividende je Aktie: **{data.dividend_ps:.2f} {pccy}** · "
-                        f"Payout: {pct(data.payout_ratio)}")
-            d1, d2, d3 = st.columns(3)
-            r = d1.number_input("Eigenkapitalkosten r (%)", step=0.25, key="ddm_r") / 100
-            g1 = d2.number_input("Wachstum Stufe 1 (%)", step=0.5, key="ddm_g1") / 100
-            yrs = d3.number_input("Jahre Stufe 1", 1, 20, key="ddm_years")
-            g2 = st.slider("Ewiges Wachstum Stufe 2 (%)", -1.0, 6.0, step=0.25, key="ddm_g2") / 100
-            gordon = val.gordon_ddm(data.dividend_ps, r, min(g1, r - 0.005))
-            two = val.two_stage_ddm(data.dividend_ps, r, g1, int(yrs), min(g2, r - 0.005))
+            gordon = val.gordon_ddm(div, r, min(g1, r - 0.005))
+            two = val.two_stage_ddm(div, r, g1, int(yrs), min(g2, r - 0.005))
             o1, o2 = st.columns(2)
             o1.metric("Gordon-Growth-Wert", f"{gordon:,.2f} {pccy}" if gordon else "n.a.",
                       f"{gordon/data.price-1:+.1%}" if gordon else None, delta_color="off")
@@ -794,37 +875,41 @@ with tab_models:
 
     # ---- Residual Income -------------------------------------------------
     with m_ri:
-        if data.eps is None or data.book_value_ps is None:
-            st.info("EPS oder Buchwert nicht verfügbar — Residual-Income-Modell nicht anwendbar.")
+        st.markdown("**Residual Income** — alle Werte editierbar (Vorgaben von Yahoo).")
+        c0, c1, c2 = st.columns(3)
+        eps = c0.number_input(f"EPS ({pccy})", step=0.01, format="%.4f", key="ri_eps")
+        book = c1.number_input(f"Buchwert je Aktie ({pccy})", step=0.01, format="%.4f", key="ri_book")
+        r = c2.number_input("Eigenkapitalkosten r (%)", step=0.25, key="ri_r") / 100
+        c3, c4, c5 = st.columns(3)
+        g = c3.number_input("Gewinnwachstum (%)", step=0.5, key="ri_g") / 100
+        yrs = c4.number_input("Prognosejahre", 3, 20, key="ri_years")
+        payout = c5.slider("Ausschüttungsquote (%)", 0.0, 100.0, step=5.0, key="ri_payout") / 100
+        tg = st.slider("Terminales RI-Wachstum (%)", -1.0, 5.0, step=0.25, key="ri_tg") / 100
+        if not book or book <= 0:
+            st.info("Buchwert je Aktie = 0 → Modell nicht anwendbar. Gib oben einen Buchwert ein.")
         else:
-            st.markdown(f"EPS: **{data.eps:.2f}** · Buchwert je Aktie: **{data.book_value_ps:.2f} {pccy}**")
-            ri1, ri2, ri3 = st.columns(3)
-            r = ri1.number_input("Eigenkapitalkosten r (%)", step=0.25, key="ri_r") / 100
-            g = ri2.number_input("Gewinnwachstum (%)", step=0.5, key="ri_g") / 100
-            yrs = ri3.number_input("Prognosejahre", 3, 20, key="ri_years")
-            rp1, rp2 = st.columns(2)
-            payout = rp1.slider("Ausschüttungsquote (%)", 0.0, 100.0, step=5.0, key="ri_payout") / 100
-            tg = rp2.slider("Terminales RI-Wachstum (%)", -1.0, 5.0, step=0.25, key="ri_tg") / 100
-            v = val.residual_income(data.eps, data.book_value_ps, r, g, int(yrs), payout, tg)
+            v = val.residual_income(eps, book, r, g, int(yrs), payout, tg)
             st.metric("Residual-Income-Wert je Aktie", f"{v:,.2f} {pccy}" if v else "n.a.",
                       f"{v/data.price-1:+.1%}" if v else None, delta_color="off")
-            st.caption("V = Buchwert + Σ Barwert der Residualgewinne (EPS − r·Buchwert) + Terminalwert.")
+        st.caption("V = Buchwert + Σ Barwert der Residualgewinne (EPS − r·Buchwert) + Terminalwert.")
 
     # ---- Future Income ---------------------------------------------------
     with m_fi:
-        if data.eps is None or data.eps <= 0:
-            st.info("Kein positives EPS verfügbar — Future-Income-Modell nicht anwendbar.")
+        st.markdown("**Future Income** — diskontierte künftige Gewinne, alle Werte editierbar.")
+        c0, c1, c2 = st.columns(3)
+        eps = c0.number_input(f"EPS ({pccy})", step=0.01, format="%.4f", key="fi_eps")
+        r = c1.number_input("Eigenkapitalkosten r (%)", step=0.25, key="fi_r") / 100
+        g = c2.number_input("Gewinnwachstum (%)", step=0.5, key="fi_g") / 100
+        c3, c4 = st.columns(2)
+        yrs = c3.number_input("Prognosejahre", 3, 20, key="fi_years")
+        tg = c4.slider("Ewiges Gewinnwachstum (%)", -1.0, 5.0, step=0.25, key="fi_tg") / 100
+        if not eps or eps <= 0:
+            st.info("EPS ≤ 0 → Modell nicht anwendbar. Gib oben ein positives EPS ein.")
         else:
-            st.markdown(f"Aktuelles EPS: **{data.eps:.2f} {pccy}** — diskontierte künftige Gewinne.")
-            f1, f2, f3 = st.columns(3)
-            r = f1.number_input("Eigenkapitalkosten r (%)", step=0.25, key="fi_r") / 100
-            g = f2.number_input("Gewinnwachstum (%)", step=0.5, key="fi_g") / 100
-            yrs = f3.number_input("Prognosejahre", 3, 20, key="fi_years")
-            tg = st.slider("Ewiges Gewinnwachstum (%)", -1.0, 5.0, step=0.25, key="fi_tg") / 100
-            v = val.future_income(data.eps, r, g, int(yrs), tg)
+            v = val.future_income(eps, r, g, int(yrs), tg)
             st.metric("Future-Income-Wert je Aktie", f"{v:,.2f} {pccy}" if v else "n.a.",
                       f"{v/data.price-1:+.1%}" if v else None, delta_color="off")
-            st.caption("V = Σ Barwert projizierter Gewinne je Aktie + Terminalwert (mit r diskontiert).")
+        st.caption("V = Σ Barwert projizierter Gewinne je Aktie + Terminalwert (mit r diskontiert).")
 
     # ---- Monte Carlo -----------------------------------------------------
     with m_mc:
