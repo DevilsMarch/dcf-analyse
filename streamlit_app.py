@@ -469,17 +469,29 @@ with st.sidebar:
                     st.rerun()
 
 # --------------------------------------------------------------------------
-# Scalar assumption widgets (keyed, values come from session_state)
+# Navigation: one tab per function
 # --------------------------------------------------------------------------
-with st.sidebar:
-    st.header("2 · Annahmen")
+st.subheader(f"{data.name}  ·  {data.ticker}")
 
-    with st.expander("Prognose & Steuer", expanded=True):
+(tab_dash, tab_dcf, tab_rev, tab_rel, tab_hist,
+ tab_ddm, tab_ri, tab_fi, tab_mc, tab_cmp, tab_exp) = st.tabs(
+    ["📊 Dashboard", "💰 DCF", "🔄 Reverse DCF", "📈 Relative", "🕰️ Historisch",
+     "💵 DDM", "🏦 Residual Income", "🔮 Future Income", "🎲 Monte Carlo",
+     "⚖️ Vergleich", "💾 Export"])
+
+# ==========================================================================
+# DCF tab — settings, drivers, computation (runs first so all tabs have data)
+# ==========================================================================
+with tab_dcf:
+    st.markdown("#### Annahmen")
+    a1, a2, a3 = st.columns(3)
+    with a1:
         forecast_years = st.slider("Prognosejahre", 3, 15, key="forecast_years")
         tax_rate = st.slider("Steuersatz (%)", 0.0, 50.0, step=0.5, key="tax_rate") / 100
-
-    with st.expander("WACC (Diskontsatz)", expanded=False):
-        wacc_mode = st.radio("Methode", ["Aufbau (CAPM)", "Direkt vorgeben"],
+        mid_year = st.checkbox("Mid-Year-Convention", key="mid_year",
+                               help="Cashflows in der Jahresmitte diskontieren (Banking-Standard).")
+    with a2:
+        wacc_mode = st.radio("WACC-Methode", ["Aufbau (CAPM)", "Direkt vorgeben"],
                              horizontal=True, key="wacc_mode")
         if wacc_mode == "Direkt vorgeben":
             wacc_override = st.slider("WACC (%)", 3.0, 20.0, step=0.1, key="wacc_override") / 100
@@ -493,85 +505,150 @@ with st.sidebar:
             kd = st.slider("Fremdkapitalkosten vor Steuern (%)", 0.0, 12.0, step=0.1, key="kd") / 100
             ew = st.slider("Eigenkapital-Gewicht E/(D+E) (%)", 0.0, 100.0, step=1.0, key="ew") / 100
             dw = 1 - ew
-
-    with st.expander("Terminal Value", expanded=False):
+    with a3:
         perp_g = st.slider("Perpetuity Growth Rate (%)", -1.0, 6.0, step=0.1, key="perp_g") / 100
         exit_mult = st.slider("Exit-EBITDA-Multiple (x)", 3.0, 20.0, step=0.5, key="exit_mult")
+        with st.expander("EV → Equity Bridge"):
+            net_debt = st.number_input(f"Net Debt / (Cash) (Mio {ccy})", step=100.0, key="net_debt")
+            minorities = st.number_input("Minderheiten (Mio)", step=50.0, key="minorities")
+            pension = st.number_input("Pensionsverpflichtungen (Mio)", step=50.0, key="pension")
+            associates = st.number_input("Beteiligungen (Mio)", step=50.0, key="associates")
 
-    with st.expander("EV → Equity Bridge", expanded=False):
-        net_debt = st.number_input(f"Net Debt / (Cash) (Mio {ccy})", step=100.0, key="net_debt")
-        minorities = st.number_input("Minderheiten (Mio)", step=50.0, key="minorities")
-        pension = st.number_input("Pensionsverpflichtungen (Mio)", step=50.0, key="pension")
-        associates = st.number_input("Beteiligungen (Mio)", step=50.0, key="associates")
+    if st.session_state.get("drivers_sig") != (data.ticker, forecast_years):
+        seed_drivers(data, defaults)
 
-    mid_year = st.checkbox("Mid-Year-Convention", key="mid_year",
-                           help="Cashflows in der Jahresmitte diskontieren (Banking-Standard).")
+    st.markdown("#### Treiber pro Jahr")
+    cons_available = bool(data.analyst_rev_growth) or data.analyst_ltg is not None
+    pc1, pc2, pc3, pc4 = st.columns([1, 1, 1, 3])
+    if cons_available and pc1.button("Konsens-Wachstum", use_container_width=True):
+        gp, _ = consensus_growth_path(data, forecast_years, perp_g,
+                                      fallback_initial=defaults.initial_revenue_growth)
+        st.session_state["drivers_base"]["Wachstum %"] = [round(g * 100, 2) for g in gp]
+        st.session_state["drivers_nonce"] += 1
+        st.rerun()
+    if pc2.button("Linearer Fade", use_container_width=True):
+        fp = linear_fade_path(defaults.initial_revenue_growth, perp_g, forecast_years)
+        st.session_state["drivers_base"]["Wachstum %"] = [round(g * 100, 2) for g in fp]
+        st.session_state["drivers_nonce"] += 1
+        st.rerun()
+    if pc3.button("↺ Zurücksetzen", use_container_width=True):
+        seed_drivers(data, defaults)
+        st.rerun()
+    if cons_available:
+        na = f" · {data.num_analysts} Analysten" if data.num_analysts else ""
+        near = ", ".join(f"{g:+.1%}" for g in data.analyst_rev_growth) or "–"
+        pc4.caption(f"📊 Konsens Umsatzwachstum: {near}{na}"
+                    + (f" · LTG {data.analyst_ltg:.1%}" if data.analyst_ltg else ""))
+    else:
+        pc4.caption("Keine Analystenschätzungen — Default aus historischem Wachstum.")
 
-# --------------------------------------------------------------------------
-# Driver table (editable per-year) — reseed on ticker/horizon change
-# --------------------------------------------------------------------------
-if st.session_state.get("drivers_sig") != (data.ticker, forecast_years):
-    seed_drivers(data, defaults)
+    ed1, ed2 = st.columns([1, 1])
+    with ed1:
+        num_cfg = {c: st.column_config.NumberColumn(c, format="%.2f", step=0.25) for c in DRIVER_COLS}
+        num_cfg["Jahr"] = st.column_config.NumberColumn("Jahr", disabled=True, format="%d")
+        edited = st.data_editor(
+            st.session_state["drivers_base"],
+            key=f"drivers_{st.session_state['drivers_nonce']}",
+            hide_index=True, num_rows="fixed", use_container_width=True, column_config=num_cfg,
+        )
+    growth_path = [float(v) / 100 for v in edited["Wachstum %"].tolist()]
+    margin_path = [float(v) / 100 for v in edited["EBITDA-Marge %"].tolist()]
+    da_path = [float(v) / 100 for v in edited["D&A %"].tolist()]
+    capex_path = [float(v) / 100 for v in edited["Capex %"].tolist()]
+    nwc_path = [float(v) / 100 for v in edited["ΔNWC %"].tolist()]
+    with ed2:
+        st.altair_chart(charts.growth_curve(edited["Jahr"].tolist(), growth_path),
+                        use_container_width=True)
 
-st.subheader(f"{data.name}  ·  {data.ticker}")
-st.markdown("#### Treiber pro Jahr")
+    current_scn = {"ticker": data.ticker, "scalars": scalars_now(),
+                   "drivers": {c: list(edited[c]) for c in edited.columns}}
+    assumptions, result = run_scenario(current_scn, data, defaults)
 
-cons_available = bool(data.analyst_rev_growth) or data.analyst_ltg is not None
-pc1, pc2, pc3, pc4 = st.columns([1, 1, 1, 3])
-if cons_available and pc1.button("Konsens-Wachstum", use_container_width=True):
-    gp, _ = consensus_growth_path(data, forecast_years, perp_g,
-                                  fallback_initial=defaults.initial_revenue_growth)
-    st.session_state["drivers_base"]["Wachstum %"] = [round(g * 100, 2) for g in gp]
-    st.session_state["drivers_nonce"] += 1
-    st.rerun()
-if pc2.button("Linearer Fade", use_container_width=True):
-    fp = linear_fade_path(defaults.initial_revenue_growth, perp_g, forecast_years)
-    st.session_state["drivers_base"]["Wachstum %"] = [round(g * 100, 2) for g in fp]
-    st.session_state["drivers_nonce"] += 1
-    st.rerun()
-if pc3.button("↺ Zurücksetzen", use_container_width=True):
-    seed_drivers(data, defaults)
-    st.rerun()
-if cons_available:
-    na = f" · {data.num_analysts} Analysten" if data.num_analysts else ""
-    near = ", ".join(f"{g:+.1%}" for g in data.analyst_rev_growth) or "–"
-    pc4.caption(f"📊 Konsens Umsatzwachstum: {near}{na}"
-                + (f" · LTG {data.analyst_ltg:.1%}" if data.analyst_ltg else ""))
-else:
-    pc4.caption("Keine Analystenschätzungen — Default aus historischem Wachstum.")
+    st.markdown("#### DCF-Ergebnis")
+    dr1, dr2, dr3 = st.columns(3)
+    dr1.metric("Impliziter Kurs — Perpetuity", f"{result.price_perpetuity:,.2f} {pccy}",
+               f"{result.premium_perpetuity:+.1%} vs. Markt", delta_color="off")
+    dr2.metric("Impliziter Kurs — Exit-Multiple", f"{result.price_exit:,.2f} {pccy}",
+               f"{result.premium_exit:+.1%} vs. Markt", delta_color="off")
+    dr3.metric("WACC", pct(result.wacc))
+    if result.price_perpetuity < 0 or result.equity_perpetuity < 0:
+        st.warning("⚠️ Impliziter Kurs negativ — typisch bei Firmen mit großem Finanz-/Leasingarm; "
+                   f"die ausgewiesene Net Debt ist sehr hoch ({data.net_debt:,.0f} Mio {ccy}). "
+                   "Passe **Net Debt** oben unter *EV → Equity Bridge* an.")
+    bb1, bb2 = st.columns([3, 2])
+    with bb1:
+        st.markdown("**Enterprise Value → Equity Value (Perpetuity)**")
+        bridge = pd.DataFrame({
+            "Position": ["PV der Free Cash Flows", "PV des Terminal Value", "= Enterprise Value",
+                         "– Net Debt", "– Minderheiten/Pension/Beteil.", "= Equity Value"],
+            f"Mio {ccy}": [result.pv_fcf, result.pv_tv_perpetuity, result.ev_perpetuity,
+                           -net_debt, -(minorities + pension + associates), result.equity_perpetuity]})
+        st.dataframe(bridge.style.format({f"Mio {ccy}": "{:,.0f}"}), hide_index=True,
+                     use_container_width=True)
+    with bb2:
+        st.markdown("**Wertzusammensetzung des EV**")
+        st.altair_chart(charts.value_composition(result.pv_fcf, result.pv_tv_perpetuity, ccy),
+                        use_container_width=True)
+        tv_share = result.pv_tv_perpetuity / result.ev_perpetuity if result.ev_perpetuity else 0
+        if tv_share > 0.75:
+            st.caption("⚠️ Sehr hoher TV-Anteil — Ergebnis stark von langfristigen Annahmen abhängig.")
 
-ed1, ed2 = st.columns([1, 1])
-with ed1:
-    num_cfg = {c: st.column_config.NumberColumn(c, format="%.2f", step=0.25) for c in DRIVER_COLS}
-    num_cfg["Jahr"] = st.column_config.NumberColumn("Jahr", disabled=True, format="%d")
-    edited = st.data_editor(
-        st.session_state["drivers_base"],
-        key=f"drivers_{st.session_state['drivers_nonce']}",
-        hide_index=True, num_rows="fixed", use_container_width=True, column_config=num_cfg,
-    )
+    st.markdown("#### Prognose")
+    fc1, fc2 = st.columns(2)
+    with fc1:
+        st.markdown("**Umsatz & EBITDA**")
+        st.altair_chart(charts.revenue_ebitda(result.years, result.revenue, result.ebitda, ccy),
+                        use_container_width=True)
+    with fc2:
+        st.markdown("**Free Cash Flow & Barwert**")
+        st.altair_chart(charts.fcf_chart(result.years, result.ufcf, result.pv_fcf_series, ccy),
+                        use_container_width=True)
+    st.markdown("**Treiber-Kurven (% vom Umsatz)**")
+    _rev = np.array(result.revenue)
+    st.altair_chart(charts.driver_curves(
+        result.years, (np.array(result.ebitda) / _rev).tolist(), (np.array(result.da) / _rev).tolist(),
+        (np.array(result.capex) / _rev).tolist(), (np.array(result.dnwc) / _rev).tolist()),
+        use_container_width=True)
+    with st.expander("Detailtabelle"):
+        proj = pd.DataFrame({
+            "Jahr": result.years, "Wachstum": growth_path,
+            "Umsatz": result.revenue, "EBITDA": result.ebitda, "EBIT": result.ebit,
+            "Steuern": [-x for x in result.tax], "Capex": [-c for c in result.capex],
+            "Δ NWC": result.dnwc, "Unlev. FCF": result.ufcf,
+            "Diskontfaktor": result.discount_factor, "PV FCF": result.pv_fcf_series}).set_index("Jahr")
+        _fmt = {c: "{:,.0f}" for c in proj.columns if c not in ("Diskontfaktor", "Wachstum")}
+        _fmt |= {"Diskontfaktor": "{:.3f}", "Wachstum": "{:.1%}"}
+        st.dataframe(proj.style.format(_fmt), use_container_width=True)
 
-growth_path = [float(v) / 100 for v in edited["Wachstum %"].tolist()]
-margin_path = [float(v) / 100 for v in edited["EBITDA-Marge %"].tolist()]
-da_path = [float(v) / 100 for v in edited["D&A %"].tolist()]
-capex_path = [float(v) / 100 for v in edited["Capex %"].tolist()]
-nwc_path = [float(v) / 100 for v in edited["ΔNWC %"].tolist()]
+    st.markdown("#### Sensitivität")
+    s = result.sensitivity
 
-with ed2:
-    st.altair_chart(charts.growth_curve(edited["Jahr"].tolist(), growth_path),
-                    use_container_width=True)
+    def _sens_df(row_vals, col_vals, grid, col_fmt):
+        df = pd.DataFrame(grid, index=[f"{w:.1%}" for w in row_vals],
+                          columns=[col_fmt(c) for c in col_vals])
+        df.index.name = "WACC"
+        return df
 
-# --------------------------------------------------------------------------
-# Assemble assumptions and run
-# --------------------------------------------------------------------------
-current_scn = {
-    "ticker": data.ticker,
-    "scalars": scalars_now(),
-    "drivers": {c: list(edited[c]) for c in edited.columns},
-}
-assumptions, result = run_scenario(current_scn, data, defaults)
+    def _heat(df):
+        lo, hi = df.values.min(), df.values.max(); rng = (hi - lo) or 1.0
 
-# Implied prices from all always-available models (+ on-demand ones the user has
-# already computed) — shared by the football field, the models tab and Excel.
+        def color(v):
+            tt = (v - lo) / rng
+            r = int(150 + (212 - 150) * tt); g = int(45 + (175 - 45) * tt); b = int(38 + (55 - 38) * tt)
+            return f"background-color: rgb({r},{g},{b}); color:{'#141208' if tt > 0.55 else '#F2ECD8'}"
+        return df.style.format("{:,.0f}").map(color)
+
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        st.markdown("**WACC × Perpetuity Growth**")
+        st.dataframe(_heat(_sens_df(s["waccs"], s["growths"], s["price_growth"], lambda x: f"{x:.2%}")),
+                     use_container_width=True)
+    with sc2:
+        st.markdown("**WACC × Exit-Multiple**")
+        st.dataframe(_heat(_sens_df(s["waccs"], s["multiples"], s["price_multiple"], lambda x: f"{x:.1f}x")),
+                     use_container_width=True)
+
+# Implied prices from every model (uses DCF result + model params in session_state)
 model_values = compute_model_values(data, assumptions, result)
 if st.session_state.get("peers"):
     _rp = relative_prices(data)
@@ -584,43 +661,29 @@ if st.session_state.get("histmult") and _mnum("hist_pe", 0) > 0:
 _mc = st.session_state.get("mc_result")
 if _mc and _mc.get("stats"):
     model_values["Monte Carlo (Median)"] = _mc["stats"]["p50"]
+r_eq = assumptions.cost_of_equity()
 
-# --------------------------------------------------------------------------
-# Header metrics
-# --------------------------------------------------------------------------
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Aktueller Kurs", f"{data.price:,.2f} {pccy}")
-c2.metric("Marktkap.", f"{data.market_cap:,.0f} Mio {ccy}")
-c3.metric("Net Debt", f"{net_debt:,.0f} Mio {ccy}")
-c4.metric("WACC", pct(result.wacc))
+# ==========================================================================
+# Dashboard — all results at a glance
+# ==========================================================================
+with tab_dash:
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Aktueller Kurs", f"{data.price:,.2f} {pccy}")
+    c2.metric("Marktkap.", f"{data.market_cap:,.0f} Mio {ccy}")
+    c3.metric("Net Debt", f"{net_debt:,.0f} Mio {ccy}")
+    c4.metric("WACC", pct(result.wacc))
 
-r1, r2, r3 = st.columns(3)
-r1.metric("Impliziter Kurs — Perpetuity", f"{result.price_perpetuity:,.2f} {pccy}",
-          f"{result.premium_perpetuity:+.1%} vs. Markt", delta_color="off")
-r2.metric("Impliziter Kurs — Exit-Multiple", f"{result.price_exit:,.2f} {pccy}",
-          f"{result.premium_exit:+.1%} vs. Markt", delta_color="off")
-avg = (result.price_perpetuity + result.price_exit) / 2
-r3.metric("Ø beider Methoden", f"{avg:,.2f} {pccy}", f"{avg / data.price - 1:+.1%} vs. Markt",
-          delta_color="off")
+    _prices = [v for k, v in model_values.items() if v and np.isfinite(v)]
+    fair = float(np.median(_prices)) if _prices else result.price_perpetuity
+    d1, d2, d3 = st.columns(3)
+    d1.metric("Fair Value (Median aller Methoden)", f"{fair:,.2f} {pccy}",
+              f"{fair / data.price - 1:+.1%} vs. Markt", delta_color="off")
+    d2.metric("DCF — Perpetuity", f"{result.price_perpetuity:,.2f} {pccy}",
+              f"{result.premium_perpetuity:+.1%}", delta_color="off")
+    d3.metric("DCF — Exit-Multiple", f"{result.price_exit:,.2f} {pccy}",
+              f"{result.premium_exit:+.1%}", delta_color="off")
 
-if result.price_perpetuity < 0 or result.equity_perpetuity < 0:
-    st.warning(
-        "⚠️ Impliziter Kurs negativ — typisch bei Unternehmen mit großem Finanz-/Leasingarm "
-        "(z. B. Autohersteller, Banken), deren ausgewiesene Net Debt sehr hoch ist "
-        f"({data.net_debt:,.0f} Mio {ccy}). Passe **Net Debt** in der Seitenleiste unter "
-        "*EV → Equity Bridge* an die rein operative Nettoverschuldung an."
-    )
-
-# --------------------------------------------------------------------------
-# Tabs
-# --------------------------------------------------------------------------
-tab_val, tab_fc, tab_sens, tab_models, tab_cmp, tab_exp = st.tabs(
-    ["🎯 Bewertung", "📊 Prognose", "🌡️ Sensitivität", "🧮 Modelle",
-     "⚖️ Vergleich", "💾 Export & Szenarien"])
-
-with tab_val:
     st.markdown("#### Bewertungsspanne (Football Field)")
-    s = result.sensitivity
     all_prices = [v for row in s["price_growth"] for v in row] + \
                  [v for row in s["price_multiple"] for v in row]
     ff_rows = [
@@ -629,10 +692,8 @@ with tab_val:
         {"method": "DCF · Exit-Multiple", "low": result.price_exit,
          "high": result.price_exit, "point": result.price_exit, "color": charts.BRONZE},
         {"method": "DCF · Sensitivität", "low": min(all_prices), "high": max(all_prices),
-         "point": result.price_perpetuity, "color": charts.GOLD_DEEP},
-    ]
-    # other valuation methods as single-point markers
-    _mcolor = {"DDM (Gordon)": charts.GOLD_LIGHT, "Residual Income": charts.BRONZE,
+         "point": result.price_perpetuity, "color": charts.GOLD_DEEP}]
+    _mcolor = {"DDM (2-Stufen)": charts.GOLD_LIGHT, "Residual Income": charts.BRONZE,
                "Future Income": charts.GOLD_DEEP, "Relative (Median)": charts.CREAM,
                "Hist. Multiples (Ø)": charts.GREY, "Monte Carlo (Median)": charts.GOLD}
     for name, price in model_values.items():
@@ -645,301 +706,211 @@ with tab_val:
         ff_rows.append({"method": "Analysten-Kursziele", "low": t["low"], "high": t["high"],
                         "point": t.get("mean", (t["low"] + t["high"]) / 2), "color": charts.CREAM})
     st.altair_chart(charts.football_field(ff_rows, data.price, pccy), use_container_width=True)
-    st.caption("Balken = Spanne, weißer Strich = Mittelwert, rote Linie = aktueller Kurs. "
-               "Weitere Methoden (Comps, Historie, Monte Carlo) erscheinen automatisch, "
-               "sobald du sie im Tab **Modelle** berechnet hast.")
+    st.caption("Balken = Spanne, weißer Strich = Mittelwert, rote Linie = aktueller Kurs. Comps, "
+               "Historie und Monte Carlo erscheinen, sobald du sie im jeweiligen Reiter berechnet hast.")
 
-    b1, b2 = st.columns([3, 2])
-    with b1:
-        st.markdown("**Enterprise Value → Equity Value (Perpetuity)**")
-        bridge = pd.DataFrame({
-            "Position": ["PV der Free Cash Flows", "PV des Terminal Value", "= Enterprise Value",
-                         "– Net Debt", "– Minderheiten/Pension/Beteil.", "= Equity Value"],
-            f"Mio {ccy}": [result.pv_fcf, result.pv_tv_perpetuity, result.ev_perpetuity,
-                           -net_debt, -(minorities + pension + associates), result.equity_perpetuity],
-        })
-        st.dataframe(bridge.style.format({f"Mio {ccy}": "{:,.0f}"}), hide_index=True,
-                     use_container_width=True)
-    with b2:
-        st.markdown("**Wertzusammensetzung des EV**")
-        st.altair_chart(charts.value_composition(result.pv_fcf, result.pv_tv_perpetuity, ccy),
-                        use_container_width=True)
-        tv_share = result.pv_tv_perpetuity / result.ev_perpetuity if result.ev_perpetuity else 0
-        if tv_share > 0.75:
-            st.caption("⚠️ Sehr hoher TV-Anteil — Ergebnis stark von langfristigen Annahmen abhängig.")
+    ov1, ov2 = st.columns([3, 2])
+    with ov1:
+        st.markdown("#### Methodenübersicht")
+        ov = [{"Methode": k, "Kurs": v} for k, v in model_values.items() if v and np.isfinite(v)]
+        st.altair_chart(charts.methods_bar(ov, data.price, pccy), use_container_width=True)
+    with ov2:
+        st.markdown("#### Alle Ergebnisse")
+        srows = [{"Methode": k, "Kurs": v, "Prämie": v / data.price - 1}
+                 for k, v in model_values.items() if v and np.isfinite(v)]
+        if t.get("mean"):
+            srows.append({"Methode": "Analysten-Kursziel (Ø)", "Kurs": t["mean"],
+                          "Prämie": t["mean"] / data.price - 1})
+        st.dataframe(pd.DataFrame(srows).style.format({"Kurs": "{:,.2f}", "Prämie": "{:+.1%}"}),
+                     hide_index=True, use_container_width=True)
 
-with tab_fc:
-    fc1, fc2 = st.columns(2)
-    with fc1:
-        st.markdown("**Umsatz & EBITDA**")
-        st.altair_chart(charts.revenue_ebitda(result.years, result.revenue, result.ebitda, ccy),
-                        use_container_width=True)
-    with fc2:
-        st.markdown("**Free Cash Flow & Barwert**")
-        st.altair_chart(charts.fcf_chart(result.years, result.ufcf, result.pv_fcf_series, ccy),
-                        use_container_width=True)
+with tab_rev:
+    st.markdown("**Reverse DCF — welche Annahme preist der Markt ein?** Löse die DCF "
+                "rückwärts auf den Zielkurs.")
+    param_label = {"Umsatzwachstum (konstant p.a.)": "growth", "EBITDA-Marge": "margin",
+                   "WACC": "wacc", "Terminal Growth": "terminal_growth",
+                   "Exit-EBITDA-Multiple": "exit_multiple"}
+    rc1, rc2 = st.columns(2)
+    choice = rc1.selectbox("Annahme", list(param_label), key="rev_param")
+    tgt = rc2.number_input(f"Zielkurs ({pccy})", value=float(round(data.price, 2)),
+                           step=1.0, key="rev_target")
+    param = param_label[choice]
+    x = val.reverse_solve(data, assumptions, param, tgt)
+    if x is None:
+        st.warning("Kein Wert im plausiblen Bereich — der Zielkurs lässt sich mit dieser "
+                   "Annahme allein nicht erreichen. Andere Annahme wählen.")
+    else:
+        disp = f"{x:.1f}x" if param == "exit_multiple" else f"{x:.1%}"
+        st.metric(f"Impliziert: {choice}", disp)
+        st.caption(f"Ein Kurs von {tgt:,.2f} {pccy} entspricht **{disp}** — bei sonst "
+                   "unveränderten (DCF-)Annahmen.")
 
-    st.markdown("**Treiber-Kurven (% vom Umsatz)**")
-    rev = np.array(result.revenue)
-    st.altair_chart(charts.driver_curves(
-        result.years,
-        (np.array(result.ebitda) / rev).tolist(),
-        (np.array(result.da) / rev).tolist(),
-        (np.array(result.capex) / rev).tolist(),
-        (np.array(result.dnwc) / rev).tolist()), use_container_width=True)
+with tab_rel:
+    st.markdown(f"**Relative Valuation** — Multiples und Kennzahlen frei editierbar. "
+                f"Branche: *{data.sector or '–'} / {data.industry or '–'}*.")
+    pc1, pc2 = st.columns([3, 1])
+    peers_str = pc1.text_input("Vergleichs-Ticker (optional, kommagetrennt)", key="peers_in",
+                               placeholder="z. B. MSFT, GOOGL, DELL, HPQ")
+    if pc2.button("Comps laden", use_container_width=True, key="peers_btn") and peers_str.strip():
+        tks = tuple(t.strip().upper() for t in peers_str.split(",") if t.strip())
+        st.session_state["peers"] = peers_cached(tks)
+    peers = st.session_state.get("peers", [])
+    if peers:
+        dfp = pd.DataFrame(peers)
+        show = dfp[["ticker", "name", "pe", "forward_pe", "ev_ebitda", "ev_sales", "pb"]].copy()
+        show.columns = ["Ticker", "Name", "P/E", "Fwd P/E", "EV/EBITDA", "EV/Umsatz", "P/B"]
+        st.dataframe(show.style.format({c: "{:.1f}" for c in
+                     ["P/E", "Fwd P/E", "EV/EBITDA", "EV/Umsatz", "P/B"]}, na_rep="–"),
+                     hide_index=True, use_container_width=True)
+        if st.button("↧ Peer-Median als Multiples übernehmen", key="peers_apply"):
+            med = val.relative_valuation(data, peers)["medians"]
+            st.session_state["rel_pe"] = float(round(med.get("pe") or 0, 2))
+            st.session_state["rel_evebitda"] = float(round(med.get("ev_ebitda") or 0, 2))
+            st.session_state["rel_evsales"] = float(round(med.get("ev_sales") or 0, 2))
+            st.session_state["rel_pb"] = float(round(med.get("pb") or 0, 2))
+            st.rerun()
 
-    st.markdown("**Detailtabelle**")
-    proj = pd.DataFrame({
-        "Jahr": result.years, "Wachstum": growth_path,
-        "Umsatz": result.revenue, "EBITDA": result.ebitda, "EBIT": result.ebit,
-        "Steuern": [-x for x in result.tax], "Capex": [-c for c in result.capex],
-        "Δ NWC": result.dnwc, "Unlev. FCF": result.ufcf,
-        "Diskontfaktor": result.discount_factor, "PV FCF": result.pv_fcf_series,
-    }).set_index("Jahr")
-    fmt = {c: "{:,.0f}" for c in proj.columns if c not in ("Diskontfaktor", "Wachstum")}
-    fmt |= {"Diskontfaktor": "{:.3f}", "Wachstum": "{:.1%}"}
-    st.dataframe(proj.style.format(fmt), use_container_width=True)
+    st.markdown("**Anzuwendende Multiples** (0 = ignorieren)")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.number_input("P/E", step=0.5, key="rel_pe")
+    m2.number_input("EV/EBITDA", step=0.5, key="rel_evebitda")
+    m3.number_input("EV/Umsatz", step=0.1, key="rel_evsales")
+    m4.number_input("P/B", step=0.5, key="rel_pb")
+    st.markdown(f"**Kennzahlen von {data.ticker}**")
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.number_input(f"EPS ({pccy})", step=0.01, format="%.4f", key="rel_eps")
+    k2.number_input(f"EBITDA (Mio {ccy})", step=10.0, key="rel_ebitda")
+    k3.number_input(f"Umsatz (Mio {ccy})", step=10.0, key="rel_rev")
+    k4.number_input(f"Buchwert/Aktie ({pccy})", step=0.01, format="%.4f", key="rel_book")
+    k5.number_input(f"Net Debt (Mio {ccy})", step=10.0, key="rel_netdebt")
 
-with tab_sens:
-    st.markdown("Impliziter Kurs bei variierendem WACC und Wachstum / Multiple.")
+    rp = relative_prices(data)
+    if rp:
+        rows = [{"Methode": k, "Kurs": v} for k, v in rp.items()]
+        st.altair_chart(charts.methods_bar(rows, data.price, pccy), use_container_width=True)
+    else:
+        st.info("Trage Multiples ein (oder lade Comps und übernimm den Peer-Median).")
 
-    def sens_df(row_vals, col_vals, grid, col_fmt):
-        df = pd.DataFrame(grid, index=[f"{w:.1%}" for w in row_vals],
-                          columns=[col_fmt(c) for c in col_vals])
-        df.index.name = "WACC"
-        return df
-
-    def heat(df: pd.DataFrame):
-        lo, hi = df.values.min(), df.values.max()
-        rng = (hi - lo) or 1.0
-
-        def color(v):
-            tt = (v - lo) / rng                      # 0 = low (red) → 1 = high (gold)
-            r = int(150 + (212 - 150) * tt); g = int(45 + (175 - 45) * tt); b = int(38 + (55 - 38) * tt)
-            txt = "#141208" if tt > 0.55 else "#F2ECD8"
-            return f"background-color: rgb({r},{g},{b}); color:{txt}"
-        return df.style.format("{:,.0f}").map(color)
-
-    sc1, sc2 = st.columns(2)
-    with sc1:
-        st.markdown("**WACC × Perpetuity Growth**")
-        st.dataframe(heat(sens_df(s["waccs"], s["growths"], s["price_growth"], lambda x: f"{x:.2%}")),
-                     use_container_width=True)
-    with sc2:
-        st.markdown("**WACC × Exit-Multiple**")
-        st.dataframe(heat(sens_df(s["waccs"], s["multiples"], s["price_multiple"], lambda x: f"{x:.1f}x")),
-                     use_container_width=True)
-
-with tab_models:
-    r_eq = assumptions.cost_of_equity()
-    st.caption(f"Eigenkapitalkosten (CAPM) für die Equity-Modelle: **{r_eq:.2%}** · "
-               f"WACC: **{result.wacc:.2%}** · alle Kurse in {pccy}.")
-
-    # reuse the shared model values (includes on-demand results once computed)
-    ov = [{"Methode": k, "Kurs": v} for k, v in model_values.items()
-          if v is not None and np.isfinite(v)]
-    st.markdown("#### Methodenübersicht")
-    st.altair_chart(charts.methods_bar(ov, data.price, pccy), use_container_width=True)
-    st.caption("Standard-Parameter; Feineinstellung in den Reitern unten. Rote Linie = Marktkurs.")
-
-    m_rev, m_rel, m_hist, m_ddm, m_ri, m_fi, m_mc = st.tabs(
-        ["Reverse DCF", "Relative (Comps)", "Hist. Multiples", "DDM",
-         "Residual Income", "Future Income", "Monte Carlo"])
-
-    # ---- Reverse DCF -----------------------------------------------------
-    with m_rev:
-        st.markdown("**Welche Annahme preist der Markt ein?** Löse die DCF rückwärts "
-                    "auf den Zielkurs.")
-        param_label = {"Umsatzwachstum (konstant p.a.)": "growth", "EBITDA-Marge": "margin",
-                       "WACC": "wacc", "Terminal Growth": "terminal_growth",
-                       "Exit-EBITDA-Multiple": "exit_multiple"}
-        rc1, rc2 = st.columns(2)
-        choice = rc1.selectbox("Annahme", list(param_label), key="rev_param")
-        tgt = rc2.number_input(f"Zielkurs ({pccy})", value=float(round(data.price, 2)),
-                               step=1.0, key="rev_target")
-        param = param_label[choice]
-        x = val.reverse_solve(data, assumptions, param, tgt)
-        if x is None:
-            st.warning("Kein Wert im plausiblen Bereich — der Zielkurs lässt sich mit dieser "
-                       "Annahme allein nicht erreichen. Andere Annahme wählen.")
-        else:
-            disp = f"{x:.1f}x" if param == "exit_multiple" else f"{x:.1%}"
-            st.metric(f"Impliziert: {choice}", disp)
-            st.caption(f"Ein Kurs von {tgt:,.2f} {pccy} entspricht **{disp}** — bei sonst "
-                       "unveränderten Annahmen.")
-
-    # ---- Relative valuation (comps) --------------------------------------
-    with m_rel:
-        st.markdown(f"**Relative Valuation** — Multiples und Kennzahlen frei editierbar. "
-                    f"Branche: *{data.sector or '–'} / {data.industry or '–'}*.")
-        pc1, pc2 = st.columns([3, 1])
-        peers_str = pc1.text_input("Vergleichs-Ticker (optional, kommagetrennt)", key="peers_in",
-                                   placeholder="z. B. MSFT, GOOGL, DELL, HPQ")
-        if pc2.button("Comps laden", use_container_width=True, key="peers_btn") and peers_str.strip():
-            tks = tuple(t.strip().upper() for t in peers_str.split(",") if t.strip())
-            st.session_state["peers"] = peers_cached(tks)
-        peers = st.session_state.get("peers", [])
-        if peers:
-            dfp = pd.DataFrame(peers)
-            show = dfp[["ticker", "name", "pe", "forward_pe", "ev_ebitda", "ev_sales", "pb"]].copy()
-            show.columns = ["Ticker", "Name", "P/E", "Fwd P/E", "EV/EBITDA", "EV/Umsatz", "P/B"]
-            st.dataframe(show.style.format({c: "{:.1f}" for c in
-                         ["P/E", "Fwd P/E", "EV/EBITDA", "EV/Umsatz", "P/B"]}, na_rep="–"),
-                         hide_index=True, use_container_width=True)
-            if st.button("↧ Peer-Median als Multiples übernehmen", key="peers_apply"):
-                med = val.relative_valuation(data, peers)["medians"]
-                st.session_state["rel_pe"] = float(round(med.get("pe") or 0, 2))
-                st.session_state["rel_evebitda"] = float(round(med.get("ev_ebitda") or 0, 2))
-                st.session_state["rel_evsales"] = float(round(med.get("ev_sales") or 0, 2))
-                st.session_state["rel_pb"] = float(round(med.get("pb") or 0, 2))
-                st.rerun()
-
-        st.markdown("**Anzuwendende Multiples** (0 = ignorieren)")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.number_input("P/E", step=0.5, key="rel_pe")
-        m2.number_input("EV/EBITDA", step=0.5, key="rel_evebitda")
-        m3.number_input("EV/Umsatz", step=0.1, key="rel_evsales")
-        m4.number_input("P/B", step=0.5, key="rel_pb")
-        st.markdown(f"**Kennzahlen von {data.ticker}**")
-        k1, k2, k3, k4, k5 = st.columns(5)
-        k1.number_input(f"EPS ({pccy})", step=0.01, format="%.4f", key="rel_eps")
-        k2.number_input(f"EBITDA (Mio {ccy})", step=10.0, key="rel_ebitda")
-        k3.number_input(f"Umsatz (Mio {ccy})", step=10.0, key="rel_rev")
-        k4.number_input(f"Buchwert/Aktie ({pccy})", step=0.01, format="%.4f", key="rel_book")
-        k5.number_input(f"Net Debt (Mio {ccy})", step=10.0, key="rel_netdebt")
-
-        rp = relative_prices(data)
-        if rp:
-            rows = [{"Methode": k, "Kurs": v} for k, v in rp.items()]
+with tab_hist:
+    st.markdown("**Eigene historische Multiples** (Ø der letzten Jahre) auf aktuelle Kennzahlen.")
+    hp1, hp2 = st.columns([1, 1])
+    period_label = hp1.selectbox("Zeitraum", ["Letzte 3 Jahre", "Letzte 5 Jahre",
+                                              "Letzte 10 Jahre", "Max. verfügbar"],
+                                 index=1, key="hist_period")
+    period_map = {"Letzte 3 Jahre": 3, "Letzte 5 Jahre": 5, "Letzte 10 Jahre": 10,
+                  "Max. verfügbar": None}
+    if hp2.button("Berechnen / Aktualisieren", key="hist_btn", use_container_width=True):
+        with st.spinner("Lade Kurshistorie …"):
+            hm = historical_multiples(data.ticker, data, years=period_map[period_label])
+            st.session_state["histmult"] = hm
+            st.session_state["hist_pe"] = float(round(hm.get("pe_avg") or 0, 2))
+            st.session_state["hist_evebitda"] = float(round(hm.get("ev_ebitda_avg") or 0, 2))
+            st.rerun()
+    hm = st.session_state.get("histmult")
+    if hm and (hm.get("pe_avg") or hm.get("ev_ebitda_avg")):
+        if hm.get("n_used"):
+            st.caption(f"Berechnet aus **{hm['n_used']} Geschäftsjahren** "
+                       f"({hm.get('year_from')}–{hm.get('year_to')}). Werte editierbar:")
+        he1, he2 = st.columns(2)
+        he1.number_input("Ø P/E (historisch)", step=0.5, key="hist_pe")
+        he2.number_input("Ø EV/EBITDA (historisch)", step=0.5, key="hist_evebitda")
+        hp = hist_prices(data)
+        if hp:
+            rows = [{"Methode": k, "Kurs": v} for k, v in hp.items()]
             st.altair_chart(charts.methods_bar(rows, data.price, pccy), use_container_width=True)
-        else:
-            st.info("Trage Multiples ein (oder lade Comps und übernimm den Peer-Median).")
+        st.caption("⚠️ Näherung: Aktienanzahl und Net Debt werden mit heutigen Werten angesetzt. "
+                   "Yahoo liefert kostenlos nur wenige Jahre Fundamentaldaten.")
+    elif hm is not None:
+        st.warning("Keine ausreichende Historie verfügbar.")
+    else:
+        st.info("Zeitraum wählen und auf **Berechnen** klicken.")
 
-    # ---- Historical multiples --------------------------------------------
-    with m_hist:
-        st.markdown("**Eigene historische Multiples** (Ø der letzten Jahre) auf aktuelle Kennzahlen.")
-        hp1, hp2 = st.columns([1, 1])
-        period_label = hp1.selectbox("Zeitraum", ["Letzte 3 Jahre", "Letzte 5 Jahre",
-                                                  "Letzte 10 Jahre", "Max. verfügbar"],
-                                     index=1, key="hist_period")
-        period_map = {"Letzte 3 Jahre": 3, "Letzte 5 Jahre": 5, "Letzte 10 Jahre": 10,
-                      "Max. verfügbar": None}
-        if hp2.button("Berechnen / Aktualisieren", key="hist_btn", use_container_width=True):
-            with st.spinner("Lade Kurshistorie …"):
-                hm = historical_multiples(data.ticker, data, years=period_map[period_label])
-                st.session_state["histmult"] = hm
-                st.session_state["hist_pe"] = float(round(hm.get("pe_avg") or 0, 2))
-                st.session_state["hist_evebitda"] = float(round(hm.get("ev_ebitda_avg") or 0, 2))
-                st.rerun()
-        hm = st.session_state.get("histmult")
-        if hm and (hm.get("pe_avg") or hm.get("ev_ebitda_avg")):
-            if hm.get("n_used"):
-                st.caption(f"Berechnet aus **{hm['n_used']} Geschäftsjahren** "
-                           f"({hm.get('year_from')}–{hm.get('year_to')}). Werte editierbar:")
-            he1, he2 = st.columns(2)
-            he1.number_input("Ø P/E (historisch)", step=0.5, key="hist_pe")
-            he2.number_input("Ø EV/EBITDA (historisch)", step=0.5, key="hist_evebitda")
-            hp = hist_prices(data)
-            if hp:
-                rows = [{"Methode": k, "Kurs": v} for k, v in hp.items()]
-                st.altair_chart(charts.methods_bar(rows, data.price, pccy), use_container_width=True)
-            st.caption("⚠️ Näherung: Aktienanzahl und Net Debt werden mit heutigen Werten angesetzt. "
-                       "Yahoo liefert kostenlos nur wenige Jahre Fundamentaldaten.")
-        elif hm is not None:
-            st.warning("Keine ausreichende Historie verfügbar.")
-        else:
-            st.info("Zeitraum wählen und auf **Berechnen** klicken.")
+with tab_ddm:
+    st.markdown("**Dividend Discount Model** — alle Werte editierbar (Vorgaben von Yahoo).")
+    d0, d1, d2 = st.columns(3)
+    div = d0.number_input(f"Dividende je Aktie D₀ ({pccy})", step=0.01, format="%.4f", key="ddm_div")
+    r = d1.number_input("Eigenkapitalkosten r (%)", step=0.25, key="ddm_r") / 100
+    g1 = d2.number_input("Wachstum Stufe 1 (%)", step=0.5, key="ddm_g1") / 100
+    d3, d4 = st.columns(2)
+    yrs = d3.number_input("Jahre Stufe 1", 1, 20, key="ddm_years")
+    g2 = d4.slider("Ewiges Wachstum Stufe 2 (%)", -1.0, 6.0, step=0.25, key="ddm_g2") / 100
+    if not div or div <= 0:
+        st.info("Dividende je Aktie = 0 → DDM nicht anwendbar. Gib oben eine Dividende ein.")
+    else:
+        gordon = val.gordon_ddm(div, r, min(g1, r - 0.005))
+        two = val.two_stage_ddm(div, r, g1, int(yrs), min(g2, r - 0.005))
+        o1, o2 = st.columns(2)
+        o1.metric("Gordon-Growth-Wert", f"{gordon:,.2f} {pccy}" if gordon else "n.a.",
+                  f"{gordon/data.price-1:+.1%}" if gordon else None, delta_color="off")
+        o2.metric("2-Stufen-DDM (im Dashboard)", f"{two:,.2f} {pccy}" if two else "n.a.",
+                  f"{two/data.price-1:+.1%}" if two else None, delta_color="off")
+        if (gordon and g1 >= r) or (two and g2 >= r):
+            st.caption("Hinweis: Wachstum muss kleiner als r sein.")
 
-    # ---- DDM -------------------------------------------------------------
-    with m_ddm:
-        st.markdown("**Dividend Discount Model** — alle Werte editierbar (Vorgaben von Yahoo).")
-        d0, d1, d2 = st.columns(3)
-        div = d0.number_input(f"Dividende je Aktie D₀ ({pccy})", step=0.01, format="%.4f", key="ddm_div")
-        r = d1.number_input("Eigenkapitalkosten r (%)", step=0.25, key="ddm_r") / 100
-        g1 = d2.number_input("Wachstum Stufe 1 (%)", step=0.5, key="ddm_g1") / 100
-        d3, d4 = st.columns(2)
-        yrs = d3.number_input("Jahre Stufe 1", 1, 20, key="ddm_years")
-        g2 = d4.slider("Ewiges Wachstum Stufe 2 (%)", -1.0, 6.0, step=0.25, key="ddm_g2") / 100
-        if not div or div <= 0:
-            st.info("Dividende je Aktie = 0 → DDM nicht anwendbar. Gib oben eine Dividende ein.")
-        else:
-            gordon = val.gordon_ddm(div, r, min(g1, r - 0.005))
-            two = val.two_stage_ddm(div, r, g1, int(yrs), min(g2, r - 0.005))
-            o1, o2 = st.columns(2)
-            o1.metric("Gordon-Growth-Wert", f"{gordon:,.2f} {pccy}" if gordon else "n.a.",
-                      f"{gordon/data.price-1:+.1%}" if gordon else None, delta_color="off")
-            o2.metric("2-Stufen-DDM (im Football Field)", f"{two:,.2f} {pccy}" if two else "n.a.",
-                      f"{two/data.price-1:+.1%}" if two else None, delta_color="off")
-            if (gordon and g1 >= r) or (two and g2 >= r):
-                st.caption("Hinweis: Wachstum muss kleiner als r sein.")
+with tab_ri:
+    st.markdown("**Residual Income** — alle Werte editierbar (Vorgaben von Yahoo).")
+    c0, c1, c2 = st.columns(3)
+    eps = c0.number_input(f"EPS ({pccy})", step=0.01, format="%.4f", key="ri_eps")
+    book = c1.number_input(f"Buchwert je Aktie ({pccy})", step=0.01, format="%.4f", key="ri_book")
+    r = c2.number_input("Eigenkapitalkosten r (%)", step=0.25, key="ri_r") / 100
+    c3, c4, c5 = st.columns(3)
+    g = c3.number_input("Gewinnwachstum (%)", step=0.5, key="ri_g") / 100
+    yrs = c4.number_input("Prognosejahre", 3, 20, key="ri_years")
+    payout = c5.slider("Ausschüttungsquote (%)", 0.0, 100.0, step=5.0, key="ri_payout") / 100
+    tg = st.slider("Terminales RI-Wachstum (%)", -1.0, 5.0, step=0.25, key="ri_tg") / 100
+    if not book or book <= 0:
+        st.info("Buchwert je Aktie = 0 → Modell nicht anwendbar. Gib oben einen Buchwert ein.")
+    else:
+        v = val.residual_income(eps, book, r, g, int(yrs), payout, tg)
+        st.metric("Residual-Income-Wert je Aktie", f"{v:,.2f} {pccy}" if v else "n.a.",
+                  f"{v/data.price-1:+.1%}" if v else None, delta_color="off")
+    st.caption("V = Buchwert + Σ Barwert der Residualgewinne (EPS − r·Buchwert) + Terminalwert.")
 
-    # ---- Residual Income -------------------------------------------------
-    with m_ri:
-        st.markdown("**Residual Income** — alle Werte editierbar (Vorgaben von Yahoo).")
-        c0, c1, c2 = st.columns(3)
-        eps = c0.number_input(f"EPS ({pccy})", step=0.01, format="%.4f", key="ri_eps")
-        book = c1.number_input(f"Buchwert je Aktie ({pccy})", step=0.01, format="%.4f", key="ri_book")
-        r = c2.number_input("Eigenkapitalkosten r (%)", step=0.25, key="ri_r") / 100
-        c3, c4, c5 = st.columns(3)
-        g = c3.number_input("Gewinnwachstum (%)", step=0.5, key="ri_g") / 100
-        yrs = c4.number_input("Prognosejahre", 3, 20, key="ri_years")
-        payout = c5.slider("Ausschüttungsquote (%)", 0.0, 100.0, step=5.0, key="ri_payout") / 100
-        tg = st.slider("Terminales RI-Wachstum (%)", -1.0, 5.0, step=0.25, key="ri_tg") / 100
-        if not book or book <= 0:
-            st.info("Buchwert je Aktie = 0 → Modell nicht anwendbar. Gib oben einen Buchwert ein.")
-        else:
-            v = val.residual_income(eps, book, r, g, int(yrs), payout, tg)
-            st.metric("Residual-Income-Wert je Aktie", f"{v:,.2f} {pccy}" if v else "n.a.",
-                      f"{v/data.price-1:+.1%}" if v else None, delta_color="off")
-        st.caption("V = Buchwert + Σ Barwert der Residualgewinne (EPS − r·Buchwert) + Terminalwert.")
+with tab_fi:
+    st.markdown("**Future Income** — diskontierte künftige Gewinne, alle Werte editierbar.")
+    c0, c1, c2 = st.columns(3)
+    eps = c0.number_input(f"EPS ({pccy})", step=0.01, format="%.4f", key="fi_eps")
+    r = c1.number_input("Eigenkapitalkosten r (%)", step=0.25, key="fi_r") / 100
+    g = c2.number_input("Gewinnwachstum (%)", step=0.5, key="fi_g") / 100
+    c3, c4 = st.columns(2)
+    yrs = c3.number_input("Prognosejahre", 3, 20, key="fi_years")
+    tg = c4.slider("Ewiges Gewinnwachstum (%)", -1.0, 5.0, step=0.25, key="fi_tg") / 100
+    if not eps or eps <= 0:
+        st.info("EPS ≤ 0 → Modell nicht anwendbar. Gib oben ein positives EPS ein.")
+    else:
+        v = val.future_income(eps, r, g, int(yrs), tg)
+        st.metric("Future-Income-Wert je Aktie", f"{v:,.2f} {pccy}" if v else "n.a.",
+                  f"{v/data.price-1:+.1%}" if v else None, delta_color="off")
+    st.caption("V = Σ Barwert projizierter Gewinne je Aktie + Terminalwert (mit r diskontiert).")
 
-    # ---- Future Income ---------------------------------------------------
-    with m_fi:
-        st.markdown("**Future Income** — diskontierte künftige Gewinne, alle Werte editierbar.")
-        c0, c1, c2 = st.columns(3)
-        eps = c0.number_input(f"EPS ({pccy})", step=0.01, format="%.4f", key="fi_eps")
-        r = c1.number_input("Eigenkapitalkosten r (%)", step=0.25, key="fi_r") / 100
-        g = c2.number_input("Gewinnwachstum (%)", step=0.5, key="fi_g") / 100
-        c3, c4 = st.columns(2)
-        yrs = c3.number_input("Prognosejahre", 3, 20, key="fi_years")
-        tg = c4.slider("Ewiges Gewinnwachstum (%)", -1.0, 5.0, step=0.25, key="fi_tg") / 100
-        if not eps or eps <= 0:
-            st.info("EPS ≤ 0 → Modell nicht anwendbar. Gib oben ein positives EPS ein.")
-        else:
-            v = val.future_income(eps, r, g, int(yrs), tg)
-            st.metric("Future-Income-Wert je Aktie", f"{v:,.2f} {pccy}" if v else "n.a.",
-                      f"{v/data.price-1:+.1%}" if v else None, delta_color="off")
-        st.caption("V = Σ Barwert projizierter Gewinne je Aktie + Terminalwert (mit r diskontiert).")
-
-    # ---- Monte Carlo -----------------------------------------------------
-    with m_mc:
-        st.markdown("**Monte-Carlo-Simulation** der DCF: Wachstum, Marge, WACC und Terminal "
-                    "Growth werden zufällig um die aktuellen Annahmen variiert.")
-        mc1, mc2, mc3 = st.columns(3)
-        n_sims = mc1.select_slider("Simulationen", [500, 1000, 2000, 5000], value=2000, key="mc_n")
-        sig_g = mc2.slider("σ Wachstum (pp)", 0.5, 8.0, 3.0, 0.5, key="mc_sg") / 100
-        sig_m = mc3.slider("σ EBITDA-Marge (pp)", 0.5, 8.0, 3.0, 0.5, key="mc_sm") / 100
-        mc4, mc5 = st.columns(2)
-        sig_w = mc4.slider("σ WACC (pp)", 0.25, 3.0, 1.0, 0.25, key="mc_sw") / 100
-        sig_tg = mc5.slider("σ Terminal Growth (pp)", 0.1, 2.0, 0.5, 0.1, key="mc_stg") / 100
-        if st.button("▶ Simulation starten", type="primary", key="mc_run"):
-            with st.spinner(f"Simuliere {n_sims} Szenarien …"):
-                st.session_state["mc_result"] = val.monte_carlo(
-                    data, assumptions, n_sims=int(n_sims), sig_growth=sig_g,
-                    sig_margin=sig_m, sig_wacc=sig_w, sig_tg=sig_tg, mid_year=mid_year)
-        mcres = st.session_state.get("mc_result")
-        if mcres and mcres.get("stats"):
-            s2 = mcres["stats"]
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Median", f"{s2['p50']:,.0f} {pccy}")
-            k2.metric("P5 – P95", f"{s2['p5']:,.0f} – {s2['p95']:,.0f}")
-            k3.metric("Mittelwert", f"{s2['mean']:,.0f} {pccy}")
-            k4.metric("P(Kurs > Markt)", f"{s2['prob_above_market']:.0%}")
-            st.altair_chart(charts.monte_carlo_hist(mcres["prices"], data.price, s2["p50"], pccy),
-                            use_container_width=True)
-            st.caption("Rote Linie = Marktkurs, helle Linie = Median der Simulation.")
-        else:
-            st.info("Parameter wählen und **Simulation starten**.")
+with tab_mc:
+    st.markdown("**Monte-Carlo-Simulation** der DCF: Wachstum, Marge, WACC und Terminal "
+                "Growth werden zufällig um die aktuellen DCF-Annahmen variiert.")
+    mc1, mc2, mc3 = st.columns(3)
+    n_sims = mc1.select_slider("Simulationen", [500, 1000, 2000, 5000], value=2000, key="mc_n")
+    sig_g = mc2.slider("σ Wachstum (pp)", 0.5, 8.0, 3.0, 0.5, key="mc_sg") / 100
+    sig_m = mc3.slider("σ EBITDA-Marge (pp)", 0.5, 8.0, 3.0, 0.5, key="mc_sm") / 100
+    mc4, mc5 = st.columns(2)
+    sig_w = mc4.slider("σ WACC (pp)", 0.25, 3.0, 1.0, 0.25, key="mc_sw") / 100
+    sig_tg = mc5.slider("σ Terminal Growth (pp)", 0.1, 2.0, 0.5, 0.1, key="mc_stg") / 100
+    if st.button("▶ Simulation starten", type="primary", key="mc_run"):
+        with st.spinner(f"Simuliere {n_sims} Szenarien …"):
+            st.session_state["mc_result"] = val.monte_carlo(
+                data, assumptions, n_sims=int(n_sims), sig_growth=sig_g,
+                sig_margin=sig_m, sig_wacc=sig_w, sig_tg=sig_tg, mid_year=mid_year)
+    mcres = st.session_state.get("mc_result")
+    if mcres and mcres.get("stats"):
+        s2 = mcres["stats"]
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Median", f"{s2['p50']:,.0f} {pccy}")
+        k2.metric("P5 – P95", f"{s2['p5']:,.0f} – {s2['p95']:,.0f}")
+        k3.metric("Mittelwert", f"{s2['mean']:,.0f} {pccy}")
+        k4.metric("P(Kurs > Markt)", f"{s2['prob_above_market']:.0%}")
+        st.altair_chart(charts.monte_carlo_hist(mcres["prices"], data.price, s2["p50"], pccy),
+                        use_container_width=True)
+        st.caption("Rote Linie = Marktkurs, helle Linie = Median der Simulation.")
+    else:
+        st.info("Parameter wählen und **Simulation starten**.")
 
 with tab_cmp:
     scns: dict = st.session_state.setdefault("scenarios", {})
