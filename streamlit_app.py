@@ -385,12 +385,31 @@ def apply_scenario(scn: dict, data):
 inject_theme()
 brand_header()
 
+# Navigation pages: (sidebar label, container key). One page per function.
+NAV_PAGES = [
+    ("📊 Dashboard", "page_dash"),
+    ("💰 DCF", "page_dcf"),
+    ("🔄 Reverse DCF", "page_rev"),
+    ("📈 Relative", "page_rel"),
+    ("🕰️ Historisch", "page_hist"),
+    ("💵 DDM", "page_ddm"),
+    ("🏦 Residual Income", "page_ri"),
+    ("🔮 Future Income", "page_fi"),
+    ("🎲 Monte Carlo", "page_mc"),
+    ("⚖️ Vergleich", "page_cmp"),
+    ("💾 Export", "page_exp"),
+]
+
 with st.sidebar:
     st.header("1 · Unternehmen")
     query = st.text_input("Unternehmen oder Ticker", key="query",
                           placeholder="z. B. Apple, Volkswagen, AAPL, SAP.DE",
                           help="Firmennamen oder Ticker-Symbol eingeben und suchen.")
     do_search = st.button("🔍 Suchen", type="primary", use_container_width=True)
+
+    st.header("2 · Ansicht")
+    nav = st.radio("Ansicht", [label for label, _ in NAV_PAGES], key="nav",
+                   label_visibility="collapsed")
 
 # Run the search; auto-select on an exact ticker or single hit.
 if do_search and query.strip():
@@ -473,11 +492,26 @@ with st.sidebar:
 # --------------------------------------------------------------------------
 st.subheader(f"{data.name}  ·  {data.ticker}")
 
-(tab_dash, tab_dcf, tab_rev, tab_rel, tab_hist,
- tab_ddm, tab_ri, tab_fi, tab_mc, tab_cmp, tab_exp) = st.tabs(
-    ["📊 Dashboard", "💰 DCF", "🔄 Reverse DCF", "📈 Relative", "🕰️ Historisch",
-     "💵 DDM", "🏦 Residual Income", "🔮 Future Income", "🎲 Monte Carlo",
-     "⚖️ Vergleich", "💾 Export"])
+# Every page is rendered into its own keyed container every run (so all widgets
+# stay instantiated and their session_state survives); CSS hides the inactive
+# ones. This keeps the "all values editable" design that st.tabs gave us while
+# moving navigation into the sidebar.
+_active_key = dict(NAV_PAGES)[nav]
+_hidden = "".join(f".st-key-{key}{{display:none;}}"
+                  for _, key in NAV_PAGES if key != _active_key)
+st.markdown(f"<style>{_hidden}</style>", unsafe_allow_html=True)
+
+tab_dash = st.container(key="page_dash")
+tab_dcf = st.container(key="page_dcf")
+tab_rev = st.container(key="page_rev")
+tab_rel = st.container(key="page_rel")
+tab_hist = st.container(key="page_hist")
+tab_ddm = st.container(key="page_ddm")
+tab_ri = st.container(key="page_ri")
+tab_fi = st.container(key="page_fi")
+tab_mc = st.container(key="page_mc")
+tab_cmp = st.container(key="page_cmp")
+tab_exp = st.container(key="page_exp")
 
 # ==========================================================================
 # DCF tab — settings, drivers, computation (runs first so all tabs have data)
